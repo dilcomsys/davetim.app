@@ -912,9 +912,12 @@ const EditorPageV2: React.FC = () => {
     try {
       toast.loading('PNG oluşturuluyor...', { id: 'png-export' });
 
+      const isMobile = window.innerWidth < 768;
+      const exportScale = isMobile ? 2 : 5; // Mobilde 2x, Desktopta 5x
+
       const blob = await pdfService.exportToImage(
         canvasRef.current,
-        5, // ULTRA HIGH QUALITY (5x scale)
+        exportScale, // Dinamik kalite ayarı
         canvasDimensions.width,
         canvasDimensions.height
       );
