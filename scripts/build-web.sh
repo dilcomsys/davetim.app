@@ -31,6 +31,37 @@ ok()   { printf '\033[1;32m✓\033[0m %s\n' "$1"; }
 rm -rf "${OUT}" "${MOBILE_EXPORT}"
 
 # ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+# The repository is not an npm workspace: the root package.json has no
+# dependencies and each app carries its own lockfile. A CI host that runs
+# `npm install` at the root therefore installs nothing, and `npx expo` then
+# fetches a bare copy of Expo with none of the project's packages beside it —
+# which fails with "No platforms are configured to use the Metro bundler",
+# because expo-router and the Metro config were never installed.
+#
+# Installing here rather than relying on the host keeps the script correct
+# wherever it runs. `npm ci` is used for a reproducible tree; the check for an
+# existing node_modules keeps repeat local runs fast, since ci would otherwise
+# delete and reinstall every time.
+install_deps() {
+  local app="$1"
+  if [ -d "${ROOT}/apps/${app}/node_modules" ]; then
+    ok "${app}: dependencies already present"
+    return
+  fi
+  info "${app}: installing dependencies"
+  if [ -f "${ROOT}/apps/${app}/package-lock.json" ]; then
+    npm ci --prefix "${ROOT}/apps/${app}" --no-audit --no-fund
+  else
+    npm install --prefix "${ROOT}/apps/${app}" --no-audit --no-fund
+  fi
+}
+
+install_deps mobile
+install_deps landing
+
+# ---------------------------------------------------------------------------
 # Mobile web export
 # ---------------------------------------------------------------------------
 info "Exporting the mobile web build"
@@ -38,7 +69,11 @@ info "Exporting the mobile web build"
   cd "${ROOT}/apps/mobile"
   # Ads are a native-only feature; leaving the flag on would make app.config
   # demand AdMob IDs for a build that can never show an ad.
-  EXPO_PUBLIC_ENABLE_REWARDED_ADS=false npx expo export --platform web --output-dir "${MOBILE_EXPORT}" >/dev/null
+  # The locally installed binary, not `npx expo`. npx will happily download a
+  # standalone copy of Expo when it cannot resolve one, and that copy has none
+  # of the project's packages beside it — which is what produced "No platforms
+  # are configured to use the Metro bundler" on the first deployment.
+  EXPO_PUBLIC_ENABLE_REWARDED_ADS=false ./node_modules/.bin/expo export --platform web --output-dir "${MOBILE_EXPORT}" >/dev/null
 )
 ok "Mobile export ready"
 
@@ -46,7 +81,7 @@ ok "Mobile export ready"
 # Landing
 # ---------------------------------------------------------------------------
 info "Building the landing site"
-(cd "${ROOT}/apps/landing" && npm run build >/dev/null)
+(cd "${ROOT}/apps/landing" && ./node_modules/.bin/vite build >/dev/null)
 ok "Landing build ready"
 
 # ---------------------------------------------------------------------------

@@ -42,6 +42,15 @@ Build settings:
 | Build output directory | `dist-web` |
 | Root directory | *(leave empty — the script expects the repo root)* |
 
+The build script installs `apps/mobile` and `apps/landing` dependencies itself.
+That is deliberate: this repository is not an npm workspace, the root
+`package.json` has no dependencies, and a host that runs `npm install` at the
+root installs nothing at all. The first deployment failed exactly there —
+`npx expo` fetched a standalone copy of Expo with none of the project's packages
+beside it and stopped with *"No platforms are configured to use the Metro
+bundler"*. The script now runs `npm ci` per app and calls the local binaries
+directly, and was verified with both `node_modules` directories deleted.
+
 ### 2. Build environment variables
 
 Set these for **Production** (and Preview, if you use it). The mobile export is
@@ -98,6 +107,15 @@ catch-all is winning and AdMob will not read it.
 - The store badges on the landing page read `VITE_APP_STORE_URL` and
   `VITE_PLAY_STORE_URL`; set them once the listings exist, and leave them unset
   until then so the badges stay disabled.
+
+## Expected build output
+
+Two messages are normal and not failures:
+
+- *"Firebase service files not found — analytics will be a no-op in this
+  build."* The service files are gitignored and Firebase Analytics is
+  native-only, so a web build never needs them.
+- npm deprecation warnings from transitive Expo dependencies.
 
 ## Rebuilds
 
