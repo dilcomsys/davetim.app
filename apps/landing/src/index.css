@@ -1,0 +1,87 @@
+/*
+ * Davetim design tokens.
+ *
+ * The palette comes from İznik tilework — the ornament that already sits on
+ * Turkish wedding and engagement stationery: a porcelain body, cobalt outline,
+ * turquoise fill, and the red the potters called Armenian bole. It replaces
+ * the cream-and-terracotta scheme the site had, which said nothing about
+ * invitations and could have belonged to any product.
+ *
+ * apps/mobile/src/theme/tokens.ts carries the same values under the same
+ * roles, so the two surfaces stay in step.
+ */
+
+:root {
+  --porcelain: #faf8f3;
+  --porcelain-deep: #f2ede4;
+  --white: #ffffff;
+
+  --cobalt: #1b3fa0;
+  --cobalt-deep: #142e77;
+  --cobalt-soft: #e3e9fa;
+  --turquoise: #1e8e9e;
+  --turquoise-deep: #146f7b;
+  --turquoise-light: #7ed1da;
+  --turquoise-soft: #dff3f3;
+  --bole: #c0362c;
+  --bole-deep: #a22b22;
+  --gold: #b08341;
+
+  --ink: #171a2b;
+  --ink-soft: #555b6d;
+  --ink-faint: #7c8190;
+  --rule: #ded4c4;
+
+  --display: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  --body: 'Avenir Next', Avenir, 'Segoe UI', system-ui, Helvetica, Arial, sans-serif;
+
+  /* Engraved lettering: small, capitalised, widely tracked. Every eyebrow and
+     label uses it, so the type system speaks with one recognisable voice. */
+  --tracking-engraved: 0.22em;
+
+  --shell: 1220px;
+  --radius-sm: 12px;
+  --radius-md: 18px;
+  --radius-lg: 26px;
+  --shadow-paper: 0 28px 70px rgba(20, 46, 119, 0.12), 0 8px 24px rgba(20, 46, 119, 0.06);
+
+  color-scheme: light;
+  font-family: var(--body);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* { box-sizing: border-box; }
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 94px;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100svh;
+  overflow-x: hidden;
+  background: var(--porcelain);
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+button, input, textarea, select { font: inherit; }
+
+a { color: inherit; }
+
+:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+img, svg { max-width: 100%; }
+
+::selection {
+  background: var(--cobalt);
+  color: var(--white);
+}

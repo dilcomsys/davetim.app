@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck, test, lint, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/mobile/package-lock.json
+            apps/landing/package-lock.json
+
+      - name: Install app dependencies
+        run: npm run install:apps
+
+      # The mobile app reads EXPO_PUBLIC_* at build time. CI must not carry
+      # real credentials, and the checks must pass without a backend, so the
+      # placeholders below stand in for them.
+      - name: Run checks
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: https://ci.invalid
+          EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-key
+          EXPO_PUBLIC_ENABLE_BACKEND_WRITES: 'false'
+          EXPO_PUBLIC_ENABLE_REWARDED_ADS: 'false'
+        run: npm run check
+
+  deno:
+    name: Edge Function checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # Every function under supabase/functions is live. The two retired ones
+      # moved to archive/retired-edge-functions on 2026-08-04, so the checks no
+      # longer need exclusions.
+      - name: Format check
+        run: deno fmt --config supabase/functions/deno.json --check supabase/functions
+
+      - name: Lint
+        run: deno lint --config supabase/functions/deno.json supabase/functions
+
+      # Type checking resolves @supabase/supabase-js from JSR, so it needs
+      # network access. It is the check that catches a contract mismatch
+      # between a function and the shared runtime helpers.
+      - name: Type check
+        run: deno check --config supabase/functions/deno.json supabase/functions/*/index.ts

@@ -13,9 +13,17 @@ pnpm-debug.log*
 .env.production.local
 
 # Production builds
-frontend/dist/
+apps/*/dist/
+apps/*/web-build/
+apps/mobile/dist-web-check/
 backend/dist/
 *.tsbuildinfo
+
+# Expo generated state
+.expo/
+.eas/
+apps/mobile/ios/
+apps/mobile/android/
 
 # Logs
 logs/
@@ -103,3 +111,10 @@ jspm_packages/
 
 # TernJS port file
 .tern-port
+
+# Local tool output
+.playwright-mcp/
+supabase/.temp/
+
+# Combined web build (scripts/build-web.sh output for Cloudflare Pages)
+dist-web/

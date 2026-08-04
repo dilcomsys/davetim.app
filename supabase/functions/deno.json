@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@supabase/supabase-js": "jsr:@supabase/supabase-js@^2",
+    "@shared/runtime": "./_shared/runtime.ts"
+  }
+}

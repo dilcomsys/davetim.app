@@ -1,0 +1,10 @@
+# Authorised digital sellers for the Davetim mobile app.
+# https://iabtechlab.com/app-ads-txt/
+#
+# AdMob crawls this file at the developer website listed on the store entry and
+# uses it to confirm that this publisher is allowed to sell the app's inventory.
+# Without it the inventory is treated as unauthorised, which suppresses demand.
+#
+# Publisher ID is the account portion of the AdMob app ID
+# (ca-app-pub-6150267472645410~...).
+google.com, pub-6150267472645410, DIRECT, f08c47fec0942fa0

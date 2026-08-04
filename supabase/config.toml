@@ -1,0 +1,48 @@
+project_id = "davetim-app"
+
+# Every mobile-contract function resolves the caller from the Authorization
+# header itself, so verify_jwt stays on. The two exceptions are documented
+# below.
+
+[functions.create-reward-intent]
+verify_jwt = true
+
+[functions.admob-ssv]
+# Called by Google, not by a signed-in user. Authentication is the ECDSA
+# signature on the query string, checked inside the function.
+verify_jwt = false
+
+[functions.media-upload-ticket]
+# Guest uploads are anonymous by design: the QR code plus the server-side
+# consent, quota and rate-limit checks are the authorisation. The owner scope
+# inside the function still requires a JWT.
+verify_jwt = false
+
+[functions.media-context]
+# Same reason: the public QR gallery must be readable without an account.
+verify_jwt = false
+
+[functions.complete-media-upload]
+# Bound to a single-use upload ticket, which a guest holds without a JWT.
+verify_jwt = false
+
+[functions.delete-media-object]
+verify_jwt = true
+
+[functions.invitation-image-upload-ticket]
+verify_jwt = true
+
+[functions.complete-invitation-image-upload]
+verify_jwt = true
+
+[functions.export-account-data]
+verify_jwt = true
+
+[functions.request-account-deletion]
+verify_jwt = true
+
+[functions.dispatch-notifications]
+# Called by a Postgres trigger, not a signed-in user. It accepts no input and
+# only flushes what the database already queued, so there is nothing for a
+# caller to forge and no secret to embed in the trigger.
+verify_jwt = false

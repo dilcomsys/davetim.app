@@ -1,0 +1,18 @@
+{
+  "name": "davetim",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "install:apps": "npm install --prefix apps/mobile && npm install --prefix apps/landing",
+    "mobile": "npm run start --prefix apps/mobile",
+    "landing": "npm run dev --prefix apps/landing",
+    "playground": "open playground/davetim-design-playground.html",
+    "build:landing": "npm run build --prefix apps/landing",
+    "typecheck:mobile": "npm run typecheck --prefix apps/mobile",
+    "lint": "npm run lint --prefix apps/mobile && npm run lint --prefix apps/landing",
+    "test:mobile": "npm run test --prefix apps/mobile",
+    "check:functions": "deno fmt --config supabase/functions/deno.json --check supabase/functions && deno lint --config supabase/functions/deno.json supabase/functions && deno check --config supabase/functions/deno.json supabase/functions/*/index.ts",
+    "check": "npm run typecheck:mobile && npm run test:mobile && npm run lint && npm run build:landing",
+    "build:web": "bash scripts/build-web.sh"
+  }
+}
