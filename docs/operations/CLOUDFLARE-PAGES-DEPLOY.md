@@ -108,6 +108,44 @@ catch-all is winning and AdMob will not read it.
   `VITE_PLAY_STORE_URL`; set them once the listings exist, and leave them unset
   until then so the badges stay disabled.
 
+## Troubleshooting
+
+### Error 525 — SSL handshake failed
+
+**A domain correctly attached to Pages cannot return 525.** Pages has no origin
+server: Cloudflare serves the files itself, so there is no second TLS hop to
+fail. A 525 therefore means the DNS record is still pointing at the *old* host
+and being proxied — Cloudflare accepts the browser's connection, then fails to
+negotiate TLS with Hostinger behind it.
+
+Observed on 2026-08-04: `davetim.app` resolved to Cloudflare's proxy IPs with
+Cloudflare nameservers and a valid edge certificate, and still answered 525.
+Edge TLS was fine; the origin hop was the problem, which is only possible if an
+origin is still configured.
+
+Fix, in this order:
+
+1. **DNS → delete the stale records.** Remove the `A`/`AAAA`/`CNAME` records for
+   `davetim.app` and `www` that point at the old host. Adding a Pages custom
+   domain does not overwrite an existing record — the old one keeps winning.
+2. **Pages project → Custom domains → add `davetim.app`** (and `www`).
+   Cloudflare creates the correct record itself and issues the certificate.
+   Wait for the status to read *Active*.
+3. **SSL/TLS → Overview → Full (strict)** is correct once Pages is serving.
+   Do not switch to Flexible to make the error go away; that only hides a
+   misrouted origin and serves the site over an unencrypted back half.
+
+Confirm the project deploys at all by opening its `*.pages.dev` URL first. If
+that works and the custom domain does not, the problem is DNS, not the build.
+
+### Verifying the fix
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" https://davetim.app/
+```
+
+525 means step 1 is not done. 200 means the origin hop is gone.
+
 ## Expected build output
 
 Two messages are normal and not failures:

@@ -95,10 +95,17 @@ cp -R "${MOBILE_EXPORT}/assets" "${OUT}/assets"
 
 # The three guest-facing route families. `media/manage` is an owner screen and
 # is deliberately left behind.
-mkdir -p "${OUT}/i" "${OUT}/rsvp" "${OUT}/media"
-cp "${MOBILE_EXPORT}/i/[invitationId].html"   "${OUT}/i/"
-cp "${MOBILE_EXPORT}/rsvp/[guestToken].html"  "${OUT}/rsvp/"
-cp "${MOBILE_EXPORT}/media/[qrCode].html"     "${OUT}/media/"
+#
+# The bracketed filenames Expo emits are renamed on the way in. Cloudflare Pages
+# answered a rewrite whose destination was `/i/[invitationId].html` with a 308
+# to `/i/[invitationId]`, which matched the same `/i/*` rule again and looped
+# until the browser gave up — every shared invitation link was dead. Plain
+# names have no such normalisation, and the shell is identical either way since
+# the route is resolved client-side from the URL.
+mkdir -p "${OUT}/_shell"
+cp "${MOBILE_EXPORT}/i/[invitationId].html"   "${OUT}/_shell/invitation.html"
+cp "${MOBILE_EXPORT}/rsvp/[guestToken].html"  "${OUT}/_shell/rsvp.html"
+cp "${MOBILE_EXPORT}/media/[qrCode].html"     "${OUT}/_shell/gallery.html"
 
 # Landing last so its index.html owns `/`. It is the only file the two builds
 # both produce; everything else lives in a different path.
@@ -111,11 +118,15 @@ cp -R "${LANDING_DIST}/." "${OUT}/"
 # to precede the landing catch-all. Static files are served before any of this
 # is consulted, which is what keeps /app-ads.txt and /assets/* intact.
 cat > "${OUT}/_redirects" <<'REDIRECTS'
-# Guest-facing routes from the Expo web export. The filenames keep Expo's
-# dynamic-segment brackets, so each one is rewritten explicitly.
-/i/*            /i/[invitationId].html    200
-/rsvp/*         /rsvp/[guestToken].html   200
-/media/*        /media/[qrCode].html      200
+# Guest-facing routes from the Expo web export.
+#
+# The destinations live under /_shell/ and carry plain names. A destination
+# ending in a bracketed Expo filename made Pages 308 to the extensionless form,
+# which re-matched the rule below it and looped. /_shell/ also cannot collide
+# with any of the wildcards above it.
+/i/*            /_shell/invitation.html   200
+/rsvp/*         /_shell/rsvp.html         200
+/media/*        /_shell/gallery.html      200
 
 # Everything else is the landing single-page app.
 /*              /index.html               200
