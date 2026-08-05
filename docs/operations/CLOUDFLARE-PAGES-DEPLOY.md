@@ -138,6 +138,31 @@ Fix, in this order:
 Confirm the project deploys at all by opening its `*.pages.dev` URL first. If
 that works and the custom domain does not, the problem is DNS, not the build.
 
+### A rewrite that 308s and loses the path
+
+Measured on the live site, not assumed:
+
+| Rule | Result |
+|---|---|
+| `/* → /index.html` | `200`, `redirects=0`, URL preserved |
+| `/i/* → /_shell/invitation.html` | `200`, `redirects=1`, final URL `/_shell/invitation` |
+
+Pages normalises a destination ending in a plain `.html` to its extensionless
+form and answers with a 308. For a dynamic route that is fatal twice over: the
+invitation ID disappears from the URL, and the first attempt — whose
+destination still carried Expo's bracketed filename — bounced between
+`/i/<id>` and `/i/[invitationId]` until the browser gave up.
+
+Index files are exempt. `/index.html` works precisely because it is one, which
+is why every shell destination is now a directory index:
+
+```
+/i/*  →  /_shell/invitation/index.html
+```
+
+If a future route needs the same treatment, copy that shape rather than
+pointing at a bare `.html`.
+
 ### Verifying the fix
 
 ```bash
@@ -145,6 +170,16 @@ curl -sS -o /dev/null -w "%{http_code}\n" https://davetim.app/
 ```
 
 525 means step 1 is not done. 200 means the origin hop is gone.
+
+Check the guest routes with redirects included — a bare status code hides the
+problem above, because the redirect chain still ends in a 200:
+
+```bash
+curl -sSL -o /dev/null -w "%{http_code} redirects=%{num_redirects} %{url_effective}\n" \
+  https://davetim.app/i/<a-published-invitation-id>
+```
+
+`redirects=0` and an unchanged URL is the only passing result.
 
 ## Expected build output
 

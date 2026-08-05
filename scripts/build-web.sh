@@ -102,10 +102,10 @@ cp -R "${MOBILE_EXPORT}/assets" "${OUT}/assets"
 # until the browser gave up — every shared invitation link was dead. Plain
 # names have no such normalisation, and the shell is identical either way since
 # the route is resolved client-side from the URL.
-mkdir -p "${OUT}/_shell"
-cp "${MOBILE_EXPORT}/i/[invitationId].html"   "${OUT}/_shell/invitation.html"
-cp "${MOBILE_EXPORT}/rsvp/[guestToken].html"  "${OUT}/_shell/rsvp.html"
-cp "${MOBILE_EXPORT}/media/[qrCode].html"     "${OUT}/_shell/gallery.html"
+mkdir -p "${OUT}/_shell/invitation" "${OUT}/_shell/rsvp" "${OUT}/_shell/gallery"
+cp "${MOBILE_EXPORT}/i/[invitationId].html"   "${OUT}/_shell/invitation/index.html"
+cp "${MOBILE_EXPORT}/rsvp/[guestToken].html"  "${OUT}/_shell/rsvp/index.html"
+cp "${MOBILE_EXPORT}/media/[qrCode].html"     "${OUT}/_shell/gallery/index.html"
 
 # Landing last so its index.html owns `/`. It is the only file the two builds
 # both produce; everything else lives in a different path.
@@ -120,13 +120,16 @@ cp -R "${LANDING_DIST}/." "${OUT}/"
 cat > "${OUT}/_redirects" <<'REDIRECTS'
 # Guest-facing routes from the Expo web export.
 #
-# The destinations live under /_shell/ and carry plain names. A destination
-# ending in a bracketed Expo filename made Pages 308 to the extensionless form,
-# which re-matched the rule below it and looped. /_shell/ also cannot collide
-# with any of the wildcards above it.
-/i/*            /_shell/invitation.html   200
-/rsvp/*         /_shell/rsvp.html         200
-/media/*        /_shell/gallery.html      200
+# Every destination is a directory index, which is the one shape Pages serves
+# in place. Measured on the live site: `/* -> /index.html` keeps the requested
+# URL and does not redirect, while `/i/* -> /_shell/invitation.html` answered
+# 308 to `/_shell/invitation` — Pages normalises a plain `.html` destination to
+# its extensionless form, and the invitation ID is lost with the redirect.
+# Index files are exempt from that normalisation, so these mirror the shape
+# `/index.html` already proved.
+/i/*            /_shell/invitation/index.html   200
+/rsvp/*         /_shell/rsvp/index.html         200
+/media/*        /_shell/gallery/index.html      200
 
 # Everything else is the landing single-page app.
 /*              /index.html               200
