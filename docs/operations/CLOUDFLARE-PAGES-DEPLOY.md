@@ -138,30 +138,28 @@ Fix, in this order:
 Confirm the project deploys at all by opening its `*.pages.dev` URL first. If
 that works and the custom domain does not, the problem is DNS, not the build.
 
-### A rewrite that 308s and loses the path
+### Rewrite destinations must be directories
 
-Measured on the live site, not assumed:
+Three forms were tried against the live site. Only the third works:
 
-| Rule | Result |
+| Destination | Result |
 |---|---|
-| `/* → /index.html` | `200`, `redirects=0`, URL preserved |
-| `/i/* → /_shell/invitation.html` | `200`, `redirects=1`, final URL `/_shell/invitation` |
+| `/_shell/invitation.html` | `308` → `/_shell/invitation`; the invitation ID is lost from the URL |
+| `/_shell/invitation/index.html` | `308` → `/_shell/invitation/`; **the rule is dropped**, the request falls through to `/* → /index.html`, and the guest is shown the marketing page |
+| `/_shell/invitation/` | `200`, no redirect, URL preserved |
 
-Pages normalises a destination ending in a plain `.html` to its extensionless
-form and answers with a 308. For a dynamic route that is fatal twice over: the
-invitation ID disappears from the URL, and the first attempt — whose
-destination still carried Expo's bracketed filename — bounced between
-`/i/<id>` and `/i/[invitationId]` until the browser gave up.
+Pages normalises a destination that ends in `.html`, and a destination that
+would itself redirect causes the rule to be skipped rather than followed. The
+second form is the dangerous one: `curl` reports `200 redirects=0`, which looks
+correct, while the page being served is the wrong app entirely. Checking the
+status code alone does not catch it — compare the script tag:
 
-Index files are exempt. `/index.html` works precisely because it is one, which
-is why every shell destination is now a directory index:
-
-```
-/i/*  →  /_shell/invitation/index.html
+```bash
+curl -sS https://davetim.app/i/<id> | grep -oE 'src="[^"]+"' | head -1
 ```
 
-If a future route needs the same treatment, copy that shape rather than
-pointing at a bare `.html`.
+`/_expo/static/js/web/entry-*.js` is the invitation app. `/assets/index-*.js`
+is the landing bundle, which means the rewrite is not being applied.
 
 ### Verifying the fix
 

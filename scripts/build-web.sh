@@ -120,16 +120,22 @@ cp -R "${LANDING_DIST}/." "${OUT}/"
 cat > "${OUT}/_redirects" <<'REDIRECTS'
 # Guest-facing routes from the Expo web export.
 #
-# Every destination is a directory index, which is the one shape Pages serves
-# in place. Measured on the live site: `/* -> /index.html` keeps the requested
-# URL and does not redirect, while `/i/* -> /_shell/invitation.html` answered
-# 308 to `/_shell/invitation` — Pages normalises a plain `.html` destination to
-# its extensionless form, and the invitation ID is lost with the redirect.
-# Index files are exempt from that normalisation, so these mirror the shape
-# `/index.html` already proved.
-/i/*            /_shell/invitation/index.html   200
-/rsvp/*         /_shell/rsvp/index.html         200
-/media/*        /_shell/gallery/index.html      200
+# Destinations are directories, not files. Everything else was measured on the
+# live site and failed:
+#
+#   /_shell/invitation.html        308 -> /_shell/invitation   (loses the id)
+#   /_shell/invitation/index.html  308 -> /_shell/invitation/  (rule is then
+#                                          dropped and the request falls
+#                                          through to the landing catch-all,
+#                                          so a guest sees the marketing page)
+#   /_shell/invitation/            200, no redirect             <- this one
+#
+# A destination that would itself redirect makes Pages skip the rule, which is
+# why the second form looked like "no redirect" while quietly serving the wrong
+# app.
+/i/*            /_shell/invitation/   200
+/rsvp/*         /_shell/rsvp/         200
+/media/*        /_shell/gallery/      200
 
 # Everything else is the landing single-page app.
 /*              /index.html               200
