@@ -161,6 +161,38 @@ curl -sS https://davetim.app/i/<id> | grep -oE 'src="[^"]+"' | head -1
 `/_expo/static/js/web/entry-*.js` is the invitation app. `/assets/index-*.js`
 is the landing bundle, which means the rewrite is not being applied.
 
+Check an asset too, since a missing one is invisible in the status code:
+
+```bash
+curl -sS -o /dev/null -w "%{content_type}\n" \
+  "https://davetim.app/assets/vendor/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.b4eb097d35f44ed943676fd56f6bdc51.ttf"
+```
+
+Anything other than a font content type means the asset is missing and the
+catch-all is answering in its place.
+
+### Pages does not upload `node_modules`
+
+Expo emits its bundled assets under `assets/node_modules/…` — icon fonts,
+navigation images. Cloudflare Pages skips any directory named `node_modules`
+when it uploads a build, so every one of those files 404'd in production and
+fell through to the landing catch-all. The browser asked for a font and
+received HTML:
+
+```
+OTS parsing error: invalid sfntVersion: 1008821359
+```
+
+`1008821359` is `0x3C21444F`, which is `<!DO` — the start of `<!DOCTYPE`. The
+invitation still rendered, just with no icons anywhere, which is why a status
+check would never have caught it.
+
+`build-web.sh` moves the directory to `assets/vendor` and rewrites the
+references in the bundle, then fails the build if any reference survives.
+Verified locally: the font is served as a font (`sfntVersion 0x00010000`, not
+HTML) and the invitation page renders its calendar, location, share and copy
+icons.
+
 ### Verifying the fix
 
 ```bash

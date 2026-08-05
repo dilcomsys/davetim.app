@@ -107,6 +107,41 @@ cp "${MOBILE_EXPORT}/i/[invitationId].html"   "${OUT}/_shell/invitation/index.ht
 cp "${MOBILE_EXPORT}/rsvp/[guestToken].html"  "${OUT}/_shell/rsvp/index.html"
 cp "${MOBILE_EXPORT}/media/[qrCode].html"     "${OUT}/_shell/gallery/index.html"
 
+# Cloudflare Pages skips any directory named `node_modules` when it uploads a
+# build, and Expo emits its bundled assets under `assets/node_modules/...`.
+# Every icon font and navigation image therefore 404'd in production and fell
+# through to the landing catch-all, so the browser received HTML where it asked
+# for a font — "OTS parsing error: invalid sfntVersion: 1008821359", which is
+# `<!DO` read as a number. The invitation rendered, with no icons.
+#
+# Moving the directory and rewriting the references in the bundle removes the
+# dependency on that behaviour entirely.
+if [ -d "${MOBILE_EXPORT}/assets/node_modules" ]; then
+  info "Relocating assets out of node_modules"
+  mkdir -p "${OUT}/assets"
+  mv "${OUT}/assets/node_modules" "${OUT}/assets/vendor"
+
+  rewritten=0
+  while IFS= read -r file; do
+    if grep -q 'assets/node_modules' "$file" 2>/dev/null; then
+      # `sed -i ''` is the BSD form; GNU sed needs `-i` with no argument.
+      if sed --version >/dev/null 2>&1; then
+        sed -i 's|assets/node_modules|assets/vendor|g' "$file"
+      else
+        sed -i '' 's|assets/node_modules|assets/vendor|g' "$file"
+      fi
+      rewritten=$((rewritten + 1))
+    fi
+  done < <(find "${OUT}" -type f \( -name '*.js' -o -name '*.html' -o -name '*.css' -o -name '*.json' \))
+
+  ok "Rewrote asset references in ${rewritten} file(s)"
+
+  if grep -rq 'assets/node_modules' "${OUT}" 2>/dev/null; then
+    echo "Still referencing assets/node_modules after the rewrite." >&2
+    exit 1
+  fi
+fi
+
 # Landing last so its index.html owns `/`. It is the only file the two builds
 # both produce; everything else lives in a different path.
 cp -R "${LANDING_DIST}/." "${OUT}/"
