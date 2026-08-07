@@ -53,6 +53,8 @@ export const ANALYTICS_EVENTS = {
   guestsImported: 'guests_imported',
   guestsExported: 'guests_exported',
   rsvpLinkCopied: 'rsvp_link_copied',
+  guestInviteSent: 'guest_invite_sent',
+  guestInvitesShared: 'guest_invites_shared',
   rsvpSubmitted: 'rsvp_submitted',
 
   // QR media

@@ -12,6 +12,8 @@ import { ANALYTICS_EVENTS } from '@/features/analytics/events';
 import { featureFlags } from '@/config/feature-flags';
 import type { PublicRsvpContext, RsvpStatus } from '@/domain/models';
 import { getErrorMessage } from '@/features/auth/auth-utils';
+import { EditorCanvas } from '@/features/editor/editor-canvas';
+import { createEditorDocument } from '@/features/editor/editor-model';
 import { getPublicRsvpContext, submitRsvp } from '@/features/guests/guest-service';
 import { formatEventDate } from '@/lib/format';
 import { useRemoteData } from '@/lib/remote-data';
@@ -63,34 +65,49 @@ function RsvpForm({ context: initialContext, guestToken }: { context: PublicRsvp
     <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-      <BrandMark />
-      <PaperCard>
-        <Engraved>Yanıtınızı bekliyoruz</Engraved>
-        <Text accessibilityRole="header" style={paperText.display}>Merhaba {context.guest.fullName}</Text>
-        <GoldRule />
-        <Text style={styles.subtitle}>{context.invitation.title}</Text>
-        <Text style={paperText.body}>{formatEventDate(context.invitation.eventDate)}{context.invitation.eventTime ? ` · ${context.invitation.eventTime}` : ''}</Text>
-      </PaperCard>
+          <BrandMark />
+          <PaperCard>
+            <Engraved>Yanıtınızı bekliyoruz</Engraved>
+            <Text accessibilityRole="header" style={paperText.display}>Merhaba {context.guest.fullName}</Text>
+            <GoldRule />
+            <Text style={styles.subtitle}>{context.invitation.title}</Text>
+            <Text style={paperText.body}>{formatEventDate(context.invitation.eventDate)}{context.invitation.eventTime ? ` · ${context.invitation.eventTime}` : ''}</Text>
+          </PaperCard>
 
-      <View style={styles.card}>
-        {success ? <View style={styles.successBox}><Ionicons color={colors.success} name="checkmark-circle-outline" size={24} /><Text style={styles.successText}>Yanıtınız kaydedildi. Dilediğiniz zaman bu bağlantıdan güncelleyebilirsiniz.</Text></View> : null}
-        {!featureFlags.backendWrites ? <View style={styles.lockBox}><Ionicons color={colors.warning} name="shield-outline" size={21} /><Text style={styles.lockText}>Yanıt gönderimi staging güvenlik kontrolü tamamlanana kadar kilitli.</Text></View> : null}
-        <Text style={styles.label}>Katılabilecek misiniz?</Text>
-        <View style={styles.statusRow}>
-          <Choice active={status === 'attending'} icon="checkmark-circle-outline" label="Katılıyorum" onPress={() => setStatus('attending')} />
-          <Choice active={status === 'declined'} icon="close-circle-outline" label="Katılamıyorum" onPress={() => setStatus('declined')} />
-        </View>
-        {status === 'attending' ? (
-          <View style={styles.field}>
-            <Text style={styles.label}>Yanınızdaki kişi sayısı</Text>
-            <View style={styles.counter}><Pressable accessibilityLabel="Kişi sayısını azalt" onPress={() => setCompanionCount((value) => Math.max(0, value - 1))} style={styles.counterButton}><Ionicons name="remove" size={20} /></Pressable><Text style={styles.counterValue}>{companionCount}</Text><Pressable accessibilityLabel="Kişi sayısını artır" onPress={() => setCompanionCount((value) => Math.min(20, value + 1))} style={styles.counterButton}><Ionicons name="add" size={20} /></Pressable></View>
+          {/* The invitation itself, drawn here rather than linked to.
+              The link a guest receives used to open straight onto this form, so
+              the one thing they were sent — the design the host spent their
+              evening on — was the one thing they could not see. A button to go
+              and look at it elsewhere is a worse answer than simply showing it:
+              the RSVP context already carries the design, so this costs no extra
+              request and works whether or not the invitation is also reachable
+              at its public address. */}
+          <EditorCanvas
+            document={createEditorDocument(context.invitation, null)}
+            interactive={false}
+            onSelect={() => undefined}
+            selectedId={null}
+          />
+
+          <View style={styles.card}>
+            {success ? <View style={styles.successBox}><Ionicons color={colors.success} name="checkmark-circle-outline" size={24} /><Text style={styles.successText}>Yanıtınız kaydedildi. Dilediğiniz zaman bu bağlantıdan güncelleyebilirsiniz.</Text></View> : null}
+            {!featureFlags.backendWrites ? <View style={styles.lockBox}><Ionicons color={colors.warning} name="shield-outline" size={21} /><Text style={styles.lockText}>Yanıt gönderimi staging güvenlik kontrolü tamamlanana kadar kilitli.</Text></View> : null}
+            <Text style={styles.label}>Katılabilecek misiniz?</Text>
+            <View style={styles.statusRow}>
+              <Choice active={status === 'attending'} icon="checkmark-circle-outline" label="Katılıyorum" onPress={() => setStatus('attending')} />
+              <Choice active={status === 'declined'} icon="close-circle-outline" label="Katılamıyorum" onPress={() => setStatus('declined')} />
+            </View>
+            {status === 'attending' ? (
+              <View style={styles.field}>
+                <Text style={styles.label}>Yanınızdaki kişi sayısı</Text>
+                <View style={styles.counter}><Pressable accessibilityLabel="Kişi sayısını azalt" onPress={() => setCompanionCount((value) => Math.max(0, value - 1))} style={styles.counterButton}><Ionicons color={colors.secondary} name="remove" size={20} /></Pressable><Text style={styles.counterValue}>{companionCount}</Text><Pressable accessibilityLabel="Kişi sayısını artır" onPress={() => setCompanionCount((value) => Math.min(20, value + 1))} style={styles.counterButton}><Ionicons color={colors.secondary} name="add" size={20} /></Pressable></View>
+              </View>
+            ) : null}
+            <Field label="Beslenme notu" onChangeText={setDietaryRestrictions} placeholder="Alerji veya tercih (isteğe bağlı)" value={dietaryRestrictions} />
+            <Field label="Notunuz" multiline onChangeText={setNotes} placeholder="Davet sahibine iletmek istediğiniz not" value={notes} />
+            {error ? <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text> : null}
+            <PrimaryButton accessibilityLabel="RSVP yanıtını kaydet" disabled={!featureFlags.backendWrites} icon="send-outline" loading={saving} onPress={() => void submit()}>Yanıtı kaydet</PrimaryButton>
           </View>
-        ) : null}
-        <Field label="Beslenme notu" onChangeText={setDietaryRestrictions} placeholder="Alerji veya tercih (isteğe bağlı)" value={dietaryRestrictions} />
-        <Field label="Notunuz" multiline onChangeText={setNotes} placeholder="Davet sahibine iletmek istediğiniz not" value={notes} />
-        {error ? <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text> : null}
-        <PrimaryButton accessibilityLabel="RSVP yanıtını kaydet" disabled={!featureFlags.backendWrites} icon="send-outline" loading={saving} onPress={() => void submit()}>Yanıtı kaydet</PrimaryButton>
-      </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

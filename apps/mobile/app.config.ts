@@ -105,6 +105,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       ...(firebase.any
         ? [
           '@react-native-firebase/app',
+          /*
+           * Static linkage plus an SPM opt-out. Both halves are required and
+           * neither is optional — see plugins/with-rnfirebase-no-spm.js for the
+           * two `pod install` failures that pin this down.
+           */
+          './plugins/with-rnfirebase-no-spm.js',
           ['expo-build-properties', { ios: { useFrameworks: 'static' } }] as [string, Record<string, unknown>],
         ]
         : []),

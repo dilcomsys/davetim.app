@@ -3,13 +3,14 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import type { Href } from 'expo-router';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { captureRef } from 'react-native-view-shot';
 
 import { BottomSheet } from '@/components/bottom-sheet';
-import { Enter, Fade, Tap } from '@/components/motion';
+import { Fade, Tap } from '@/components/motion';
 import { PrimaryButton } from '@/components/primary-button';
 import { featureFlags } from '@/config/feature-flags';
 // Expo resolves the .native/.web implementation at bundle time; ESLint's resolver does not.
@@ -18,7 +19,7 @@ import { rewardedAdGateway } from '@/features/ads/rewarded-ad-gateway';
 import { consumeRewardReceipt, type RewardedFeatureKey } from '@/features/ads/rewarded-feature';
 import type { Invitation, InvitationTemplate } from '@/domain/models';
 import { useAuth } from '@/features/auth/auth-provider';
-import { EditorCanvas } from '@/features/editor/editor-canvas';
+import { EditorCanvas, type ElementTransform } from '@/features/editor/editor-canvas';
 import {
   ActionTile,
   Field,
@@ -30,24 +31,33 @@ import {
   Stepper,
   SwatchPicker,
   TileGrid,
+  ToolButton,
+  ToolStrip,
+  Tray,
 } from '@/features/editor/editor-controls';
 import { trackEvent } from '@/features/analytics/analytics';
 import { ANALYTICS_EVENTS } from '@/features/analytics/events';
+import { fitCanvas } from '@/features/editor/canvas-fit';
 import { DecorationPicker } from '@/features/editor/decoration-picker';
 import { uploadInvitationImage } from '@/features/editor/editor-asset-service';
 import {
   alignElements,
+  BINDING_LABELS,
+  boundValue,
   CANVAS_ASPECT,
+  createBoundTextElement,
   createDecorationElement,
   createDividerElement,
   createEditorDocument,
   createTextElement,
   distributeElements,
+  duplicateElement,
   type AlignEdge,
   type DistributeAxis,
   type EditorDocument,
   type EditorElement,
   type TextAlignment,
+  type TextBinding,
 } from '@/features/editor/editor-model';
 import { useEditorHistory } from '@/features/editor/use-editor-history';
 import { usePrompts } from '@/features/prompts/prompt-provider';
@@ -64,8 +74,48 @@ import { useRemoteData } from '@/lib/remote-data';
 import { colors, engraved, radius, shadow, spacing, typography } from '@/theme/tokens';
 
 type EditorLoadResult = { invitation: Invitation | null; template: InvitationTemplate | null };
-type Panel = 'details' | 'insert' | 'decorations' | 'design' | 'layers' | 'share' | 'element';
 type ExportVariant = 'standard' | 'watermarkFree' | 'hd';
+
+/*
+ * The editor's chrome splits by whether you need to see the invitation while you
+ * work, which turns out to be the only distinction that matters.
+ *
+ * Filling in the event details, reordering layers or exporting are jobs you do
+ * *to* the design and then look at the result; a modal sheet is right for those,
+ * and the canvas can give up its room for the duration.
+ *
+ * Choosing a colour, a size or an angle is judged by watching the invitation as
+ * it changes. Those get a tray: short, non-modal, and in the layout rather than
+ * over it, so the canvas keeps nearly all its height and stays live.
+ */
+type Sheet = 'details' | 'layers' | 'share';
+type Tool =
+  | 'arrange'
+  | 'color'
+  | 'content'
+  | 'decorations'
+  | 'insert'
+  | 'palette'
+  | 'position'
+  | 'size'
+  | 'transform'
+  | 'type';
+
+/** Tools that describe the selected element and mean nothing without one. */
+const ELEMENT_TOOLS = new Set<Tool>(['arrange', 'color', 'content', 'position', 'size', 'transform', 'type']);
+
+const TRAY_TITLES: Record<Tool, string> = {
+  arrange: 'Düzen',
+  color: 'Renk',
+  content: 'Metin',
+  decorations: 'Süslemeler',
+  insert: 'Ekle',
+  palette: 'Tasarım',
+  position: 'Konum',
+  size: 'Boyut',
+  transform: 'Çevir',
+  type: 'Yazı',
+};
 
 // Offered alongside whatever the template already uses, so a design can be
 // pulled back to the brand without typing hex codes from memory.
@@ -88,6 +138,10 @@ const BRAND_SWATCHES = [
  * through. Falls back to the stored name for everything else.
  */
 function elementLabel(element: EditorElement) {
+  // A bound box is named by the detail it carries. Naming it by its current text
+  // would relabel it every time the host edits the venue, and two boxes showing
+  // the same detail would be indistinguishable in the layer list.
+  if (element.bind) return BINDING_LABELS[element.bind];
   if (element.type === 'text') {
     const content = element.content?.trim();
     if (content) return content;
@@ -178,7 +232,8 @@ function EditorWorkspace({
   const { celebrate } = usePrompts();
   const [invitation, setInvitation] = useState(initialInvitation);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [panel, setPanel] = useState<Panel | null>(null);
+  const [sheet, setSheet] = useState<Sheet | null>(null);
+  const [tool, setTool] = useState<Tool | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -189,7 +244,14 @@ function EditorWorkspace({
   // The mat measures itself so the canvas can be sized to fit the available
   // height. Letting the canvas claim 100% width instead pushed it off-screen on
   // short devices, which is what made the old editor scroll.
-  const [matSize, setMatSize] = useState({ height: 0, width: 0 });
+  //
+  // `top` is in window coordinates because the panel it has to avoid is
+  // positioned against the window, not against this view.
+  const [matRect, setMatRect] = useState({ height: 0, top: 0, width: 0 });
+  // Where the open panel's top edge sits, in window coordinates, reported by the
+  // sheet itself. `null` when no panel is open.
+  const [sheetTop, setSheetTop] = useState<number | null>(null);
+  const matRef = useRef<View>(null);
   const canvasRef = useRef<View>(null);
   const selected = useMemo(
     () => document.elements.find((item) => item.id === selectedId) ?? null,
@@ -200,9 +262,46 @@ function EditorWorkspace({
   // `onLayout` reports the padded box, so the padding comes off before the
   // canvas is fitted to whichever axis runs out first.
   const canvasWidth = Math.max(0, Math.min(
-    matSize.width - spacing.lg * 2,
-    (matSize.height - spacing.lg * 2) * CANVAS_ASPECT,
+    matRect.width - spacing.lg * 2,
+    (matRect.height - spacing.lg * 2) * CANVAS_ASPECT,
   ));
+
+  /*
+   * Panels used to slide over the invitation, so every change had to be made
+   * blind and confirmed by closing the panel — the loop the whole editor is
+   * built around, run with the subject hidden. The canvas now shrinks into
+   * whatever strip of the mat the panel leaves and stays fully visible.
+   *
+   * A transform rather than a smaller layout: scaling is a UI-thread property,
+   * so it can track the sheet's 200ms slide without re-measuring the mat or
+   * re-laying out every element on the canvas each frame. The elements keep
+   * their real sizes, which also keeps `captureRef` exporting at full
+   * resolution regardless of what the screen is currently showing.
+   */
+  const fit = fitCanvas({
+    canvasHeight: canvasWidth / CANVAS_ASPECT,
+    matHeight: matRect.height,
+    matTop: matRect.top,
+    padding: spacing.lg,
+    panelGap: spacing.md,
+    sheetTop,
+  });
+
+  const canvasScale = useSharedValue(1);
+  const canvasOffset = useSharedValue(0);
+  useEffect(() => {
+    // Export snaps rather than animates: `waitForCanvas` only waits two frames
+    // before capturing, so an in-flight transition would be photographed
+    // half-way through. Restoring 1:1 first also keeps the capture independent
+    // of whichever panel happened to be open.
+    const duration = exporting ? 0 : 200;
+    canvasScale.set(withTiming(exporting ? 1 : fit.scale, { duration }));
+    canvasOffset.set(withTiming(exporting ? 0 : fit.offset, { duration }));
+  }, [canvasOffset, canvasScale, exporting, fit.offset, fit.scale]);
+
+  const canvasFitStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: canvasOffset.get() }, { scale: canvasScale.get() }],
+  }));
 
   function change(mutator: (current: EditorDocument) => EditorDocument) {
     setDocument(mutator(document));
@@ -226,17 +325,27 @@ function EditorWorkspace({
     }));
   }
 
+  /** Writes one event detail. Separate only because a computed key needs the cast. */
+  function patchBound(bind: TextBinding, value: string) {
+    patchDocument({ [bind]: value } as Partial<EditorDocument>);
+  }
+
   function patchSelectedStyle(updates: Partial<EditorElement['style']>) {
     if (!selected || selected.locked) return;
     patchSelected({ style: { ...selected.style, ...updates } });
   }
 
-  function moveElement(id: string, position: { x: number; y: number }) {
+  /*
+   * Lands a finished canvas gesture — a drag, a corner resize or a rotation.
+   * Called once on release rather than per frame, so the whole gesture is a
+   * single history entry and one undo puts the element back where it started.
+   */
+  function transformElement(id: string, transform: ElementTransform) {
     const target = document.elements.find((item) => item.id === id);
     if (!target || target.locked) return;
     change((current) => ({
       ...current,
-      elements: current.elements.map((item) => item.id === id ? { ...item, position } : item),
+      elements: current.elements.map((item) => item.id === id ? { ...item, ...transform } : item),
     }));
   }
 
@@ -251,9 +360,10 @@ function EditorWorkspace({
     );
     change((current) => ({ ...current, elements: [...current.elements, placed] }));
     setSelectedId(placed.id);
-    // Drop straight into the element's own controls: adding a text box and then
-    // hunting for where to type it was the sharpest edge in the old flow.
-    setPanel('element');
+    // Straight into the tool the new element most likely needs — typing for a
+    // text box, colour for anything else. Adding a text box and then hunting for
+    // where to type it was the sharpest edge in the old flow.
+    openTool(placed.type === 'text' ? 'content' : 'color');
   }
 
   function nextZIndex() {
@@ -262,22 +372,14 @@ function EditorWorkspace({
 
   function duplicateSelected() {
     if (!selected) return;
-    const duplicate: EditorElement = {
-      ...selected,
-      id: `${selected.type}-${Date.now()}`,
-      name: `${selected.name} kopyası`,
-      locked: false,
-      position: { x: Math.min(100, selected.position.x + 3), y: Math.min(100, selected.position.y + 3) },
-      zIndex: nextZIndex(),
-    };
-    addElement(duplicate);
+    addElement(duplicateElement(selected, nextZIndex()));
   }
 
   function removeSelected() {
     if (!selected || selected.locked) return;
     change((current) => ({ ...current, elements: current.elements.filter((item) => item.id !== selected.id) }));
     setSelectedId(null);
-    setPanel(null);
+    setTool(null);
   }
 
   function toggleSelectedLock() {
@@ -479,10 +581,312 @@ function EditorWorkspace({
     }
   }
 
+  /*
+   * A tray and a sheet never share the screen. They occupy the same region and
+   * answer the same question — what am I working on — so showing both would put
+   * two answers on top of each other.
+   */
+  function openSheet(next: Sheet | null) {
+    setTool(null);
+    setSheet(next);
+  }
+
+  function openTool(next: Tool | null) {
+    setSheet(null);
+    setTool(next);
+  }
+
   function selectFromCanvas(id: string | null) {
     setSelectedId(id);
-    // Tapping the canvas background is how you dismiss the element controls.
-    if (!id && panel === 'element') setPanel(null);
+    // Tapping the canvas background dismisses the element's tools; the ones that
+    // describe the document as a whole have nothing to do with the selection and
+    // stay where they are.
+    if (!id && tool && ELEMENT_TOOLS.has(tool)) setTool(null);
+  }
+
+  /*
+   * Which tools the strip offers for what is selected. A text box has words, a
+   * point size and an alignment; an ornament has none of those. Listing only
+   * what applies is what lets the strip stay one row without scrolling past
+   * controls that would do nothing.
+   */
+  const elementTools: { danger?: boolean; icon: React.ComponentProps<typeof Ionicons>['name']; tool: Tool }[] = selected
+    ? [
+      ...(selected.type === 'text'
+        ? [
+          { icon: 'text-outline' as const, tool: 'content' as Tool },
+          { icon: 'options-outline' as const, tool: 'type' as Tool },
+        ]
+        : []),
+      { icon: 'color-palette-outline' as const, tool: 'color' as Tool },
+      { icon: 'move-outline' as const, tool: 'position' as Tool },
+      { icon: 'resize-outline' as const, tool: 'size' as Tool },
+      { icon: 'sync-outline' as const, tool: 'transform' as Tool },
+      { icon: 'layers-outline' as const, tool: 'arrange' as Tool },
+    ]
+    : [];
+
+  /*
+   * One tray, one job. The controls are the same ones the old element sheet
+   * carried; what changed is that you are shown the handful that belong to the
+   * tool you asked for instead of all of them stacked in a half-screen modal.
+   */
+  function renderTray() {
+    if (tool === 'insert') {
+      return (
+        <>
+          <TileGrid>
+            <ActionTile icon="text-outline" label="Metin" onPress={() => addElement(createTextElement(nextZIndex()))} tone="accent" />
+            <ActionTile icon="remove-outline" label="Çizgi" onPress={() => addElement(createDividerElement(nextZIndex()))} />
+            <ActionTile icon="sparkles-outline" label="Süsleme" onPress={() => openTool('decorations')} />
+            <ActionTile
+              disabled={!featureFlags.backendWrites || uploadingImage}
+              icon={uploadingImage ? 'cloud-upload-outline' : 'image-outline'}
+              label={uploadingImage ? 'Yükleniyor' : 'Arka plan'}
+              onPress={() => void chooseBackgroundImage()}
+            />
+          </TileGrid>
+          {document.imageUrl ? (
+            <PanelRow danger icon="trash-outline" label="Arka plan görselini kaldır" onPress={() => patchDocument({ imageUrl: null })} />
+          ) : null}
+          {/* Boxes that follow Detay rather than holding their own copy of the
+              same words. A template brings these already wired; an invitation
+              started from blank has to be able to add them. */}
+          <FieldLabel>Etkinlik bilgisi</FieldLabel>
+          <TileGrid>
+            {(['title', 'eventDate', 'eventTime', 'locationName'] as TextBinding[]).map((bind) => (
+              <ActionTile
+                icon="pricetag-outline"
+                key={bind}
+                label={BINDING_LABELS[bind]}
+                onPress={() => addElement(createBoundTextElement(bind, nextZIndex()))}
+              />
+            ))}
+          </TileGrid>
+          {featureFlags.backendWrites ? null : (
+            <PanelNote tone="warning">Görsel yükleme, staging RLS kontrolleri tamamlanana kadar kapalı.</PanelNote>
+          )}
+        </>
+      );
+    }
+
+    if (tool === 'decorations') {
+      return <DecorationPicker onPick={(shapeId) => addElement(createDecorationElement(shapeId, nextZIndex()))} />;
+    }
+
+    if (tool === 'palette') {
+      return (
+        <>
+          <SwatchPicker
+            label="Arka plan"
+            onChange={(background) => patchColors({ background })}
+            swatches={[document.colors.background, ...BRAND_SWATCHES]}
+            value={document.colors.background}
+          />
+          <SwatchPicker
+            label="Metin"
+            onChange={(value) => patchColors({ text: value })}
+            swatches={[document.colors.text, ...BRAND_SWATCHES]}
+            value={document.colors.text}
+          />
+          <SwatchPicker
+            label="Vurgu"
+            onChange={(accent) => patchColors({ accent })}
+            swatches={[document.colors.accent, ...BRAND_SWATCHES]}
+            value={document.colors.accent}
+          />
+          {/* Only meaningful with a photograph behind the design; without one the
+              veil has nothing to soften and the row would be dead furniture. */}
+          {document.imageUrl ? (
+            <FieldRow>
+              <Stepper
+                label="Arka plan perdesi"
+                max={100}
+                min={0}
+                onChange={(value) => patchDocument({ backgroundVeil: value / 100 })}
+                step={10}
+                suffix="%"
+                value={document.backgroundVeil * 100}
+              />
+            </FieldRow>
+          ) : null}
+        </>
+      );
+    }
+
+    if (!selected) return null;
+
+    if (tool === 'content') {
+      /*
+       * A bound box has no text of its own to edit — it shows an event detail.
+       * Editing the detail here rather than the box is what keeps Detay and the
+       * design as one thing; the alternative is the bug this binding exists to
+       * fix, where the two drift apart and the host maintains both.
+       */
+      if (selected.bind) {
+        const bind = selected.bind;
+        return (
+          <>
+            <Field
+              label={BINDING_LABELS[bind]}
+              multiline={bind === 'customMessage'}
+              onChangeText={(value) => patchBound(bind, value)}
+              placeholder={bind === 'eventDate' ? '2026-09-12' : BINDING_LABELS[bind]}
+              value={boundValue(document, bind)}
+            />
+            <PanelNote>
+              Bu kutu Detay bilgilerinden besleniyor. Burada veya Detay panelinde değiştirmen aynı kapıya çıkar.
+            </PanelNote>
+          </>
+        );
+      }
+
+      return (
+        <Field
+          label="Metin"
+          multiline
+          onChangeText={(content) => patchSelected({ content })}
+          placeholder="Metni yaz"
+          value={selected.content ?? ''}
+        />
+      );
+    }
+
+    if (tool === 'type') {
+      return (
+        <>
+          <FieldRow>
+            <Stepper
+              label="Punto"
+              max={96}
+              min={8}
+              onChange={(fontSize) => patchSelectedStyle({ fontSize })}
+              value={selected.style.fontSize ?? 24}
+            />
+          </FieldRow>
+          <SegmentedControl<TextAlignment>
+            label="Hizalama"
+            onChange={(textAlign) => patchSelectedStyle({ textAlign })}
+            options={[
+              { label: 'Sol', value: 'left' },
+              { label: 'Orta', value: 'center' },
+              { label: 'Sağ', value: 'right' },
+            ]}
+            value={selected.style.textAlign ?? 'center'}
+          />
+        </>
+      );
+    }
+
+    if (tool === 'color') {
+      return selected.type === 'text' ? (
+        <SwatchPicker
+          label="Metin rengi"
+          onChange={(color) => patchSelectedStyle({ color })}
+          swatches={[document.colors.text, document.colors.accent, ...BRAND_SWATCHES]}
+          value={selected.style.color ?? document.colors.text}
+        />
+      ) : (
+        <SwatchPicker
+          label={selected.type === 'divider' ? 'Çizgi rengi' : 'Süsleme rengi'}
+          onChange={(color) => patchSelectedStyle({ color })}
+          swatches={[document.colors.accent, document.colors.primary, ...BRAND_SWATCHES]}
+          value={selected.style.color ?? document.colors.accent}
+        />
+      );
+    }
+
+    if (tool === 'position') {
+      return (
+        <>
+          <FieldRow>
+            <Stepper
+              label="Yatay"
+              max={100}
+              min={0}
+              onChange={(x) => patchSelected({ position: { ...selected.position, x } })}
+              suffix="%"
+              value={selected.position.x}
+            />
+            <Stepper
+              label="Dikey"
+              max={100}
+              min={0}
+              onChange={(y) => patchSelected({ position: { ...selected.position, y } })}
+              suffix="%"
+              value={selected.position.y}
+            />
+          </FieldRow>
+          {/* "Put this in the middle" should not be twenty-five taps. */}
+          <TileGrid>
+            <ActionTile disabled={selected.locked} icon="chevron-back-outline" label="Sol" onPress={() => alignSelected('left')} />
+            <ActionTile disabled={selected.locked} icon="code-outline" label="Orta" onPress={() => alignSelected('center')} />
+            <ActionTile disabled={selected.locked} icon="chevron-forward-outline" label="Sağ" onPress={() => alignSelected('right')} />
+            <ActionTile disabled={selected.locked} icon="menu-outline" label="Dikey orta" onPress={() => alignSelected('middle')} />
+          </TileGrid>
+        </>
+      );
+    }
+
+    if (tool === 'size') {
+      return (
+        <FieldRow>
+          <Stepper
+            label="Genişlik"
+            max={100}
+            min={5}
+            onChange={(width) => patchSelected({ size: { ...selected.size, width } })}
+            suffix="%"
+            value={selected.size.width}
+          />
+          <Stepper
+            label="Yükseklik"
+            max={100}
+            min={2}
+            onChange={(height) => patchSelected({ size: { ...selected.size, height } })}
+            suffix="%"
+            value={selected.size.height}
+          />
+        </FieldRow>
+      );
+    }
+
+    if (tool === 'transform') {
+      return (
+        <FieldRow>
+          <Stepper
+            label="Döndür"
+            max={180}
+            min={-180}
+            onChange={(rotation) => patchSelected({ rotation })}
+            step={5}
+            suffix="°"
+            value={selected.rotation}
+          />
+          <Stepper
+            label="Opaklık"
+            max={100}
+            min={10}
+            onChange={(opacity) => patchSelected({ opacity: opacity / 100 })}
+            step={10}
+            suffix="%"
+            value={selected.opacity * 100}
+          />
+        </FieldRow>
+      );
+    }
+
+    if (tool === 'arrange') {
+      return (
+        <TileGrid>
+          <ActionTile disabled={selected.locked} icon="arrow-up-outline" label="Öne al" onPress={() => moveSelected('forward')} />
+          <ActionTile disabled={selected.locked} icon="arrow-down-outline" label="Arkaya al" onPress={() => moveSelected('backward')} />
+          <ActionTile icon="copy-outline" label="Çoğalt" onPress={duplicateSelected} />
+        </TileGrid>
+      );
+    }
+
+    return null;
   }
 
   const statusLabel = dirty ? 'Kaydedilmedi' : published ? 'Yayında' : 'Taslak';
@@ -498,7 +902,7 @@ function EditorWorkspace({
           accessibilityHint="Etkinlik bilgilerini açar"
           accessibilityLabel={`Davet: ${document.title || 'Yeni davet'}`}
           accessibilityRole="button"
-          onPress={() => setPanel('details')}
+          onPress={() => openSheet('details')}
           style={styles.titleBlock}>
           <Text numberOfLines={1} style={styles.title}>{document.title || 'Yeni davet'}</Text>
           <View style={styles.statusRow}>
@@ -538,28 +942,34 @@ function EditorWorkspace({
         </Tap>
       </View>
 
-      <View onLayout={(event) => setMatSize(event.nativeEvent.layout)} style={styles.mat}>
+      <View
+        onLayout={() => matRef.current?.measureInWindow((_x, top, width, height) => setMatRect({ height, top, width }))}
+        ref={matRef}
+        style={styles.mat}>
         {canvasWidth > 0 ? (
-          <View collapsable={false} ref={canvasRef} style={{ width: canvasWidth }}>
-            <EditorCanvas
-              document={document}
-              interactive={!exporting}
-              onMoveEnd={moveElement}
-              onSelect={selectFromCanvas}
-              selectedId={exporting ? null : selectedId}
-              watermark={exportVariant === 'standard' || exportVariant === 'hd'}
-            />
-          </View>
-        ) : null}
+          <Animated.View style={canvasFitStyle}>
+            <View collapsable={false} ref={canvasRef} style={{ width: canvasWidth }}>
+              <EditorCanvas
+                document={document}
+                interactive={!exporting}
+                onTransformEnd={transformElement}
+                onSelect={selectFromCanvas}
+                selectedId={exporting ? null : selectedId}
+                watermark={exportVariant === 'standard' || exportVariant === 'hd'}
+              />
+            </View>
 
-        {/* A blank invitation is otherwise a white rectangle with nothing to
-            suggest what to do with it. Sits outside `canvasRef` so it can never
-            end up in an exported PNG. */}
-        {document.elements.length === 0 && !exporting ? (
-          <View pointerEvents="none" style={styles.emptyHint}>
-            <Ionicons color={colors.inkMuted} name="add-circle-outline" size={26} />
-            <Text style={styles.emptyHintText}>Ekle ile metin veya çizgi koy</Text>
-          </View>
+            {/* A blank invitation is otherwise a white rectangle with nothing to
+                suggest what to do with it. Inside the scaled wrapper so it
+                tracks the canvas, outside `canvasRef` so it can never end up in
+                an exported PNG. */}
+            {document.elements.length === 0 && !exporting ? (
+              <View pointerEvents="none" style={styles.emptyHint}>
+                <Ionicons color={colors.inkMuted} name="add-circle-outline" size={26} />
+                <Text style={styles.emptyHintText}>Ekle ile metin veya çizgi koy</Text>
+              </View>
+            ) : null}
+          </Animated.View>
         ) : null}
       </View>
 
@@ -581,26 +991,60 @@ function EditorWorkspace({
         </Fade>
       ) : null}
 
+      {tool ? (
+        <Tray
+          // Decorations are reached from Ekle, so closing them returns there
+          // rather than dropping the user out of the flow they were in.
+          onClose={() => setTool(tool === 'decorations' ? 'insert' : null)}
+          tall={tool === 'decorations' || tool === 'palette'}
+          title={TRAY_TITLES[tool]}>
+          {renderTray()}
+        </Tray>
+      ) : null}
+
       {selected ? (
-        <SelectionBar
-          element={selected}
-          onDeselect={() => { setSelectedId(null); setPanel(null); }}
-          onEdit={() => setPanel('element')}
-          onToggleLock={toggleSelectedLock}
-          onToggleVisible={() => patchSelected({ visible: !selected.visible })}
-        />
+        <ToolStrip>
+          <ToolButton
+            icon="checkmark-done-outline"
+            label="Bitir"
+            onPress={() => { setSelectedId(null); setTool(null); }}
+          />
+          {elementTools.map(({ icon, tool: name }) => (
+            <ToolButton
+              active={tool === name}
+              disabled={selected.locked}
+              icon={icon}
+              key={name}
+              label={TRAY_TITLES[name]}
+              onPress={() => openTool(tool === name ? null : name)}
+            />
+          ))}
+          <ToolButton
+            icon={selected.visible ? 'eye-outline' : 'eye-off-outline'}
+            label={selected.visible ? 'Gizle' : 'Göster'}
+            onPress={() => patchSelected({ visible: !selected.visible })}
+          />
+          {/* Not disabled by the lock — it is the way out of one. */}
+          <ToolButton
+            active={selected.locked}
+            icon={selected.locked ? 'lock-closed' : 'lock-open-outline'}
+            label={selected.locked ? 'Kilitli' : 'Kilitle'}
+            onPress={toggleSelectedLock}
+          />
+          <ToolButton danger disabled={selected.locked} icon="trash-outline" label="Sil" onPress={removeSelected} />
+        </ToolStrip>
       ) : (
         <View style={styles.dock}>
-          <DockButton active={panel === 'details'} icon="create-outline" label="Detay" onPress={() => setPanel('details')} />
-          <DockButton active={panel === 'insert'} icon="add-circle-outline" label="Ekle" onPress={() => setPanel('insert')} />
-          <DockButton active={panel === 'design'} icon="color-palette-outline" label="Tasarım" onPress={() => setPanel('design')} />
-          <DockButton active={panel === 'layers'} badge={document.elements.length} icon="layers-outline" label="Katman" onPress={() => setPanel('layers')} />
-          <DockButton active={panel === 'share'} icon="share-outline" label="Paylaş" onPress={() => setPanel('share')} />
+          <DockButton active={sheet === 'details'} icon="create-outline" label="Detay" onPress={() => openSheet('details')} />
+          <DockButton active={tool === 'insert'} icon="add-circle-outline" label="Ekle" onPress={() => openTool(tool === 'insert' ? null : 'insert')} />
+          <DockButton active={tool === 'palette'} icon="color-palette-outline" label="Tasarım" onPress={() => openTool(tool === 'palette' ? null : 'palette')} />
+          <DockButton active={sheet === 'layers'} badge={document.elements.length} icon="layers-outline" label="Katman" onPress={() => openSheet('layers')} />
+          <DockButton active={sheet === 'share'} icon="share-outline" label="Paylaş" onPress={() => openSheet('share')} />
         </View>
       )}
 
-      {panel === 'details' ? (
-        <BottomSheet onClose={() => setPanel(null)} subtitle="Davetiyede görünen bilgiler" title="Etkinlik">
+      {sheet === 'details' ? (
+        <BottomSheet onClose={() => setSheet(null)} onSheetTop={setSheetTop} subtitle="Davetiyede görünen bilgiler" title="Etkinlik">
           <Field label="Davet başlığı" onChangeText={(title) => patchDocument({ title })} placeholder="Ayşe & Mehmet" value={document.title} />
           <FieldRow>
             <View style={styles.flex}><Field label="Tarih" onChangeText={(eventDate) => patchDocument({ eventDate })} placeholder="2026-09-12" value={document.eventDate} /></View>
@@ -624,82 +1068,8 @@ function EditorWorkspace({
         </BottomSheet>
       ) : null}
 
-      {panel === 'insert' ? (
-        <BottomSheet heightRatio={0.42} onClose={() => setPanel(null)} subtitle="Tasarıma yeni öğe koy" title="Ekle">
-          <TileGrid>
-            <ActionTile icon="text-outline" label="Metin" onPress={() => addElement(createTextElement(nextZIndex()))} tone="accent" />
-            <ActionTile icon="remove-outline" label="Çizgi" onPress={() => addElement(createDividerElement(nextZIndex()))} />
-            <ActionTile icon="sparkles-outline" label="Süsleme" onPress={() => setPanel('decorations')} />
-            <ActionTile
-              disabled={!featureFlags.backendWrites || uploadingImage}
-              icon={uploadingImage ? 'cloud-upload-outline' : 'image-outline'}
-              label={uploadingImage ? 'Yükleniyor' : 'Arka plan'}
-              onPress={() => void chooseBackgroundImage()}
-            />
-          </TileGrid>
-          {document.imageUrl ? (
-            <PanelRow danger icon="trash-outline" label="Arka plan görselini kaldır" onPress={() => patchDocument({ imageUrl: null })} />
-          ) : null}
-          {featureFlags.backendWrites ? null : (
-            <PanelNote tone="warning">Görsel yükleme, staging RLS kontrolleri tamamlanana kadar kapalı.</PanelNote>
-          )}
-        </BottomSheet>
-      ) : null}
-
-      {panel === 'decorations' ? (
-        <BottomSheet
-          heightRatio={0.62}
-          onClose={() => setPanel('insert')}
-          subtitle="Dokunduğun süsleme tasarıma eklenir"
-          title="Süslemeler">
-          <DecorationPicker onPick={(shapeId) => addElement(createDecorationElement(shapeId, nextZIndex()))} />
-        </BottomSheet>
-      ) : null}
-
-      {panel === 'design' ? (
-        <BottomSheet onClose={() => setPanel(null)} subtitle="Davetiyenin renkleri" title="Tasarım">
-          <SwatchPicker
-            label="Arka plan"
-            onChange={(background) => patchColors({ background })}
-            swatches={[document.colors.background, ...BRAND_SWATCHES]}
-            value={document.colors.background}
-          />
-          <SwatchPicker
-            label="Metin"
-            onChange={(value) => patchColors({ text: value })}
-            swatches={[document.colors.text, ...BRAND_SWATCHES]}
-            value={document.colors.text}
-          />
-          <SwatchPicker
-            label="Vurgu"
-            onChange={(accent) => patchColors({ accent })}
-            swatches={[document.colors.accent, ...BRAND_SWATCHES]}
-            value={document.colors.accent}
-          />
-          {/* Only meaningful with a photograph behind the design; without one the
-              veil has nothing to soften and the row would be dead furniture. */}
-          {document.imageUrl ? (
-            <FieldRow>
-              <Stepper
-                label="Arka plan perdesi"
-                max={100}
-                min={0}
-                onChange={(value) => patchDocument({ backgroundVeil: value / 100 })}
-                step={10}
-                suffix="%"
-                value={document.backgroundVeil * 100}
-              />
-            </FieldRow>
-          ) : null}
-          <PanelNote>
-            Vurgu rengi çizgilerde ve QR çerçevesinde kullanılır.
-            {document.imageUrl ? ' Perde, arka plan fotoğrafını arka plan rengiyle örterek metni okunur tutar.' : ''}
-          </PanelNote>
-        </BottomSheet>
-      ) : null}
-
-      {panel === 'layers' ? (
-        <BottomSheet onClose={() => setPanel(null)} subtitle={`${document.elements.length} öğe`} title="Katmanlar">
+      {sheet === 'layers' ? (
+        <BottomSheet onClose={() => setSheet(null)} onSheetTop={setSheetTop} subtitle={`${document.elements.length} öğe`} title="Katmanlar">
           {document.elements.length === 0 ? (
             <PanelNote>Henüz öğe yok. Ekle sekmesinden metin, çizgi veya süsleme koyabilirsin.</PanelNote>
           ) : null}
@@ -738,7 +1108,7 @@ function EditorWorkspace({
                 <Pressable
                   accessibilityLabel={`${elementLabel(item)} öğesini seç`}
                   accessibilityRole="button"
-                  onPress={() => { setSelectedId(item.id); setPanel('element'); }}
+                  onPress={() => { setSelectedId(item.id); openSheet(null); }}
                   style={styles.layerMain}>
                   <Ionicons
                     color={item.visible ? colors.secondary : colors.inkMuted}
@@ -761,8 +1131,8 @@ function EditorWorkspace({
         </BottomSheet>
       ) : null}
 
-      {panel === 'share' ? (
-        <BottomSheet onClose={() => setPanel(null)} subtitle="Dışa aktar ve yayınla" title="Paylaş">
+      {sheet === 'share' ? (
+        <BottomSheet onClose={() => setSheet(null)} onSheetTop={setSheetTop} subtitle="Dışa aktar ve yayınla" title="Paylaş">
           <PanelRow
             disabled={!featureFlags.backendWrites || publishing}
             icon={published ? 'eye-off-outline' : 'paper-plane-outline'}
@@ -804,159 +1174,6 @@ function EditorWorkspace({
         </BottomSheet>
       ) : null}
 
-      {panel === 'element' && selected ? (
-        <BottomSheet
-          heightRatio={0.62}
-          onClose={() => setPanel(null)}
-          subtitle={selected.locked ? 'Kilitli · düzenlemek için kilidi aç' : selected.type === 'text' ? 'Metin' : selected.type === 'divider' ? 'Çizgi' : selected.type === 'decoration' ? 'Süsleme' : 'Görsel'}
-          title={elementLabel(selected)}>
-          {selected.type === 'text' ? (
-            <Field
-              label="Metin"
-              multiline
-              onChangeText={(content) => patchSelected({ content })}
-              placeholder="Metni yaz"
-              value={selected.content ?? ''}
-            />
-          ) : null}
-
-          <FieldRow>
-            <Stepper
-              label="Yatay"
-              max={100}
-              min={0}
-              onChange={(x) => patchSelected({ position: { ...selected.position, x } })}
-              suffix="%"
-              value={selected.position.x}
-            />
-            <Stepper
-              label="Dikey"
-              max={100}
-              min={0}
-              onChange={(y) => patchSelected({ position: { ...selected.position, y } })}
-              suffix="%"
-              value={selected.position.y}
-            />
-          </FieldRow>
-
-          <FieldRow>
-            <Stepper
-              label="Genişlik"
-              max={100}
-              min={5}
-              onChange={(width) => patchSelected({ size: { ...selected.size, width } })}
-              suffix="%"
-              value={selected.size.width}
-            />
-            {/* Height had no control at all, so a decoration could only ever be
-                resized along one axis and came out squashed. Text keeps its
-                automatic band — the point size already governs how tall it is. */}
-            {selected.type === 'text' ? (
-              <Stepper
-                label="Döndür"
-                max={180}
-                min={-180}
-                onChange={(rotation) => patchSelected({ rotation })}
-                step={5}
-                suffix="°"
-                value={selected.rotation}
-              />
-            ) : (
-              <Stepper
-                label="Yükseklik"
-                max={100}
-                min={2}
-                onChange={(height) => patchSelected({ size: { ...selected.size, height } })}
-                suffix="%"
-                value={selected.size.height}
-              />
-            )}
-          </FieldRow>
-
-
-          {/* Opacity was in the document model but had no control anywhere in the
-              app. Pairing it with the point size also stops a lone full-width
-              stepper sitting under two neat rows of two. */}
-          <FieldRow>
-            {selected.type === 'text' ? (
-              <Stepper
-                label="Punto"
-                max={96}
-                min={8}
-                onChange={(fontSize) => patchSelectedStyle({ fontSize })}
-                value={selected.style.fontSize ?? 24}
-              />
-            ) : (
-              <Stepper
-                label="Döndür"
-                max={180}
-                min={-180}
-                onChange={(rotation) => patchSelected({ rotation })}
-                step={5}
-                suffix="°"
-                value={selected.rotation}
-              />
-            )}
-            <Stepper
-              label="Opaklık"
-              max={100}
-              min={10}
-              onChange={(opacity) => patchSelected({ opacity: opacity / 100 })}
-              step={10}
-              suffix="%"
-              value={selected.opacity * 100}
-            />
-          </FieldRow>
-
-          {/* Snapping one element to the page. The steppers can get there, but
-              "put this in the middle" should not be twenty-five taps. */}
-          <FieldLabel>Sayfaya yasla</FieldLabel>
-          <TileGrid>
-            <ActionTile disabled={selected.locked} icon="chevron-back-outline" label="Sol" onPress={() => alignSelected('left')} />
-            <ActionTile disabled={selected.locked} icon="code-outline" label="Orta" onPress={() => alignSelected('center')} />
-            <ActionTile disabled={selected.locked} icon="chevron-forward-outline" label="Sağ" onPress={() => alignSelected('right')} />
-            <ActionTile disabled={selected.locked} icon="menu-outline" label="Dikey orta" onPress={() => alignSelected('middle')} />
-          </TileGrid>
-
-          {selected.type === 'text' ? (
-            <>
-              <SegmentedControl<TextAlignment>
-                label="Hizalama"
-                onChange={(textAlign) => patchSelectedStyle({ textAlign })}
-                options={[
-                  { label: 'Sol', value: 'left' },
-                  { label: 'Orta', value: 'center' },
-                  { label: 'Sağ', value: 'right' },
-                ]}
-                value={selected.style.textAlign ?? 'center'}
-              />
-              <SwatchPicker
-                label="Metin rengi"
-                onChange={(color) => patchSelectedStyle({ color })}
-                swatches={[document.colors.text, document.colors.accent, ...BRAND_SWATCHES]}
-                value={selected.style.color ?? document.colors.text}
-              />
-            </>
-          ) : null}
-
-          {selected.type === 'divider' || selected.type === 'decoration' ? (
-            <SwatchPicker
-              label={selected.type === 'divider' ? 'Çizgi rengi' : 'Süsleme rengi'}
-              onChange={(color) => patchSelectedStyle({ color })}
-              swatches={[document.colors.accent, document.colors.primary, ...BRAND_SWATCHES]}
-              value={selected.style.color ?? document.colors.accent}
-            />
-          ) : null}
-
-          <View style={styles.divider} />
-          <TileGrid>
-            <ActionTile disabled={selected.locked} icon="arrow-up-outline" label="Öne al" onPress={() => moveSelected('forward')} />
-            <ActionTile disabled={selected.locked} icon="arrow-down-outline" label="Arkaya al" onPress={() => moveSelected('backward')} />
-            <ActionTile icon="copy-outline" label="Çoğalt" onPress={duplicateSelected} />
-          </TileGrid>
-          <PanelRow danger disabled={selected.locked} icon="trash-outline" label="Öğeyi sil" onPress={removeSelected} />
-        </BottomSheet>
-      ) : null}
     </SafeAreaView>
   );
 }
@@ -987,52 +1204,6 @@ function DockButton({
       <Text style={[styles.dockLabel, active && styles.dockLabelActive]}>{label}</Text>
       {badge ? <Text style={styles.dockBadge}>{badge}</Text> : null}
     </Tap>
-  );
-}
-
-/**
- * Replaces the dock while an element is selected. Selection used to push a whole
- * section into the page and leave the tools where they were; swapping the bar
- * keeps the controls that apply right now under your thumb.
- */
-function SelectionBar({
-  element,
-  onDeselect,
-  onEdit,
-  onToggleLock,
-  onToggleVisible,
-}: {
-  element: EditorElement;
-  onDeselect: () => void;
-  onEdit: () => void;
-  onToggleLock: () => void;
-  onToggleVisible: () => void;
-}) {
-  return (
-    <Enter style={styles.selectionBar}>
-      <Tap accessibilityLabel="Seçimi bırak" accessibilityRole="button" onPress={onDeselect} style={styles.chromeButton}>
-        <Ionicons color={colors.onWorkspace} name="close" size={20} />
-      </Tap>
-      <Text numberOfLines={1} style={styles.selectionName}>{elementLabel(element)}</Text>
-      <Tap
-        accessibilityLabel={element.visible ? 'Öğeyi gizle' : 'Öğeyi göster'}
-        accessibilityRole="button"
-        onPress={onToggleVisible}
-        style={styles.chromeButton}>
-        <Ionicons color={colors.onWorkspace} name={element.visible ? 'eye-outline' : 'eye-off-outline'} size={20} />
-      </Tap>
-      <Tap
-        accessibilityLabel={element.locked ? 'Kilidi aç' : 'Öğeyi kilitle'}
-        accessibilityRole="button"
-        onPress={onToggleLock}
-        style={styles.chromeButton}>
-        <Ionicons color={element.locked ? colors.gold : colors.onWorkspace} name={element.locked ? 'lock-closed' : 'lock-open-outline'} size={20} />
-      </Tap>
-      <Tap accessibilityLabel="Öğeyi düzenle" accessibilityRole="button" onPress={onEdit} style={styles.selectionEdit}>
-        <Ionicons color={colors.white} name="options-outline" size={18} />
-        <Text style={styles.selectionEditLabel}>Düzenle</Text>
-      </Tap>
-    </Enter>
   );
 }
 
@@ -1070,7 +1241,16 @@ const styles = StyleSheet.create({
   // The canvas is centred in whatever height is left over, the way a print sits
   // on a mat rather than filling the frame.
   mat: { alignItems: 'center', flex: 1, justifyContent: 'center', padding: spacing.lg },
-  emptyHint: { alignItems: 'center', gap: spacing.sm, position: 'absolute' },
+  emptyHint: {
+    alignItems: 'center',
+    bottom: 0,
+    gap: spacing.sm,
+    justifyContent: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
   emptyHintText: { color: colors.inkMuted, fontFamily: typography.body, fontSize: 14 },
 
   toast: {
@@ -1118,30 +1298,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     top: 6,
   },
-
-  selectionBar: {
-    alignItems: 'center',
-    backgroundColor: colors.workspaceRaised,
-    borderColor: colors.workspaceBorder,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: spacing.xs,
-    marginBottom: spacing.sm,
-    marginHorizontal: spacing.md,
-    padding: spacing.xs,
-  },
-  selectionName: { color: colors.onWorkspace, flex: 1, fontFamily: typography.bodyMedium, fontSize: 13, fontWeight: '700' },
-  selectionEdit: {
-    alignItems: 'center',
-    backgroundColor: colors.secondary,
-    borderRadius: radius.md,
-    flexDirection: 'row',
-    gap: 6,
-    height: 40,
-    paddingHorizontal: spacing.md,
-  },
-  selectionEditLabel: { color: colors.white, fontFamily: typography.bodyMedium, fontSize: 13, fontWeight: '700' },
 
   switchRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.md },
   switchLabel: { color: colors.ink, fontFamily: typography.bodyMedium, fontSize: 14, fontWeight: '700' },

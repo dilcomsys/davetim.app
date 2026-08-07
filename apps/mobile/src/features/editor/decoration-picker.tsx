@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Tap } from '@/components/motion';
 import { DecorationShape } from '@/features/editor/editor-canvas';
@@ -22,7 +22,14 @@ export function DecorationPicker({ onPick }: { onPick: (shapeId: string) => void
 
   return (
     <>
-      <View style={styles.filterRow}>
+      {/* Scrolls sideways rather than wrapping. The picker lives in a tray now,
+          and eleven categories wrapped onto three lines would spend most of that
+          tray on filters instead of on the ornaments being chosen. */}
+      <ScrollView
+        contentContainerStyle={styles.filterRow}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.filterScroll}>
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ selected: category === null }}
@@ -42,7 +49,7 @@ export function DecorationPicker({ onPick }: { onPick: (shapeId: string) => void
             </Text>
           </Pressable>
         ))}
-      </View>
+      </ScrollView>
 
       <View style={styles.grid}>
         {visible.map((decoration) => (
@@ -65,7 +72,8 @@ export function DecorationPicker({ onPick }: { onPick: (shapeId: string) => void
 }
 
 const styles = StyleSheet.create({
-  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  filterScroll: { flexGrow: 0, marginHorizontal: -spacing.lg },
+  filterRow: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg },
   filter: {
     backgroundColor: colors.surface,
     borderColor: colors.border,

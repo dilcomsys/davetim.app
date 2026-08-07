@@ -1,8 +1,65 @@
 import type { Invitation, InvitationTemplate, JsonObject, PublicInvitation } from '@/domain/models';
 import { findDecoration } from '@/features/editor/decorations';
+import { formatEventDate } from '@/lib/format';
 
 export type EditorElementType = 'text' | 'image' | 'decoration' | 'divider';
 export type TextAlignment = 'left' | 'center' | 'right';
+
+/*
+ * Which event detail a text box shows.
+ *
+ * The templates have always known this: their text fields carry stable ids —
+ * `names`, `date`, `time`, `venue`, `message` — saying what each box is for. The
+ * mobile editor threw that away and pasted the field's `defaultValue` in as
+ * literal text, so a design arrived reading "15 Ağustos 2024" and the date typed
+ * into Detay went nowhere. The host's only recourse was to add a second text
+ * layer and type the date again, leaving the template's own date box sitting
+ * underneath with someone else's wedding on it.
+ *
+ * A bound box reads its text from the document instead of holding its own, so
+ * the event details and the design cannot disagree.
+ */
+export type TextBinding =
+  | 'customMessage'
+  | 'eventDate'
+  | 'eventTime'
+  | 'locationAddress'
+  | 'locationName'
+  | 'title';
+
+export const BINDING_LABELS: Record<TextBinding, string> = {
+  customMessage: 'Mesaj',
+  eventDate: 'Tarih',
+  eventTime: 'Saat',
+  locationAddress: 'Adres',
+  locationName: 'Mekân',
+  title: 'Başlık',
+};
+
+/*
+ * Template field id to event detail. Only the ids that genuinely hold event data
+ * are listed: `header`, `welcome`, `quote`, `honor` and the like are set dressing
+ * — "DÜĞÜN TÖRENİ", "Bu mutlu günümüzde…" — and binding them to the title would
+ * overwrite the template's own wording with a duplicate of the couple's names.
+ */
+const BINDING_BY_FIELD_ID: Record<string, TextBinding> = {
+  date: 'eventDate',
+  date_text: 'eventDate',
+  date_v: 'eventDate',
+  loc: 'locationName',
+  location: 'locationName',
+  message: 'customMessage',
+  name: 'title',
+  names: 'title',
+  place: 'locationName',
+  time: 'eventTime',
+  time_text: 'eventTime',
+  venue: 'locationName',
+};
+
+function binding(value: unknown): TextBinding | undefined {
+  return typeof value === 'string' && value in BINDING_LABELS ? value as TextBinding : undefined;
+}
 
 /**
  * The canvas is taller than it is wide, so a shape sized only by its width
@@ -17,6 +74,11 @@ export type EditorElement = {
   type: EditorElementType;
   name: string;
   content?: string;
+  /**
+   * When set, the box shows this event detail from the document and `content`
+   * is only the fallback shown while that detail is still empty.
+   */
+  bind?: TextBinding;
   imageUrl?: string;
   /** Identifies a vector ornament from the decoration library. */
   shapeId?: string;
@@ -110,6 +172,7 @@ function element(value: unknown, index: number): EditorElement | null {
     type,
     name: text(source.name, type === 'text' ? 'Metin' : 'Öğe'),
     content: typeof source.content === 'string' ? source.content : undefined,
+    bind: binding(source.bind),
     imageUrl: typeof source.imageUrl === 'string' ? source.imageUrl : undefined,
     shapeId: typeof source.shapeId === 'string' ? source.shapeId : undefined,
     position: {
@@ -163,11 +226,17 @@ function templateTextElements(template: InvitationTemplate): EditorElement[] {
     cursor = band.cursor;
     const savedSize = record(source.size);
 
+    const fieldId = text(source.id, `template-text-${index}`);
+
     return element({
-      id: text(source.id, `template-text-${index}`),
+      id: fieldId,
       type: 'text',
       name: text(source.label, 'Metin'),
+      // Kept as the fallback rather than discarded: a template opened before any
+      // details are filled in should still read as the designer drew it, with
+      // the sample date in the date box, not an empty gap.
       content: text(source.defaultValue, text(source.placeholder, 'Metin')),
+      bind: BINDING_BY_FIELD_ID[fieldId],
       position: saved ?? { x: 50, y: band.y },
       size: savedSize ?? { width: 80, height: band.height },
       zIndex: index + 10,
@@ -229,6 +298,33 @@ export function createEditorDocument(invitation: Invitation | PublicInvitation |
   };
 }
 
+/**
+ * The event detail a bound box currently holds, as typed. Dates come back in the
+ * document's own `YYYY-MM-DD` form; use `resolveElementText` for what to draw.
+ */
+export function boundValue(document: EditorDocument, bind: TextBinding) {
+  return document[bind];
+}
+
+/**
+ * What a text box actually shows on the canvas.
+ *
+ * A bound box falls back to its own content while its detail is empty, so a
+ * template still reads the way it was drawn before the host has filled anything
+ * in, and starts showing their event the moment they do.
+ *
+ * The date is formatted here rather than stored formatted: the document keeps
+ * `YYYY-MM-DD` because that is what the database column is, and nobody wants
+ * "2026-09-12" printed on their wedding invitation.
+ */
+export function resolveElementText(element: EditorElement, document: EditorDocument) {
+  if (!element.bind) return element.content ?? '';
+
+  const value = boundValue(document, element.bind).trim();
+  if (!value) return element.content ?? '';
+  return element.bind === 'eventDate' ? formatEventDate(value) : value;
+}
+
 export function serializeEditorDocument(document: EditorDocument): {
   title: string;
   event_date: string | null;
@@ -275,6 +371,22 @@ export function createTextElement(zIndex: number): EditorElement {
   };
 }
 
+/**
+ * A copy of an element, offset a little so it does not land exactly on its
+ * original and look like nothing happened. Lives here with the other factories
+ * because minting an id is impure and has no business running during a render.
+ */
+export function duplicateElement(element: EditorElement, zIndex: number): EditorElement {
+  return {
+    ...element,
+    id: `${element.type}-${Date.now()}`,
+    name: `${element.name} kopyası`,
+    locked: false,
+    position: { x: Math.min(100, element.position.x + 3), y: Math.min(100, element.position.y + 3) },
+    zIndex,
+  };
+}
+
 export function createDecorationElement(shapeId: string, zIndex: number): EditorElement {
   const decoration = findDecoration(shapeId);
   const width = 26;
@@ -294,6 +406,36 @@ export function createDecorationElement(shapeId: string, zIndex: number): Editor
     locked: false,
     zIndex,
     style: { color: decoration?.color ?? defaultColors.accent },
+  };
+}
+
+/**
+ * A text box wired to an event detail. This is how a blank invitation — one
+ * started without a template, which therefore has no field ids to read — still
+ * gets boxes that follow what the host types into Detay.
+ */
+export function createBoundTextElement(bind: TextBinding, zIndex: number): EditorElement {
+  const large = bind === 'title';
+  return {
+    id: `${bind}-${Date.now()}`,
+    type: 'text',
+    name: BINDING_LABELS[bind],
+    content: BINDING_LABELS[bind],
+    bind,
+    position: { x: 50, y: 50 },
+    size: { width: 80, height: large ? 16 : 10 },
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+    locked: false,
+    zIndex,
+    style: {
+      color: defaultColors.text,
+      fontFamily: 'Georgia',
+      fontSize: large ? 34 : 18,
+      fontWeight: 'normal',
+      textAlign: 'center',
+    },
   };
 }
 

@@ -5,8 +5,18 @@ import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Svg, { Path } from 'react-native-svg';
 
-import { findDecoration } from '@/features/editor/decorations';
-import { CANVAS_ASPECT, type EditorDocument, type EditorElement } from '@/features/editor/editor-model';
+import { decorationLayers, findDecoration } from '@/features/editor/decorations';
+import {
+  handleAnchors,
+  resizeFromCorner,
+  ROTATION_HANDLE_GAP,
+  rotateFromHandle,
+  type CanvasSize,
+  type Corner,
+  type Point,
+  type TransformBox,
+} from '@/features/editor/element-transform';
+import { CANVAS_ASPECT, resolveElementText, type EditorDocument, type EditorElement } from '@/features/editor/editor-model';
 import { colors, radius, shadow, spacing, typography } from '@/theme/tokens';
 
 /*
@@ -18,6 +28,16 @@ import { colors, radius, shadow, spacing, typography } from '@/theme/tokens';
  * saved before this change still look the same.
  */
 const DESIGN_WIDTH = 760;
+
+/*
+ * Handle sizing. The knob stays small so it does not obscure the design it is
+ * attached to; the slop around it is what gives a fingertip something to land
+ * on. The canvas is scaled down while a panel is open, which shrinks both, so
+ * the slop is generous rather than merely adequate.
+ */
+const HANDLE_SIZE = 20;
+const HANDLE_SLOP = 16;
+const TETHER_WIDTH = 1.5;
 
 /*
  * The templates name web fonts — Cinzel, Playfair Display, Montserrat — that the
@@ -36,19 +56,43 @@ function resolveFontFamily(family: string | undefined) {
   return SERIF_FAMILIES.has(family.trim().toLowerCase()) ? SYSTEM_SERIF : SYSTEM_SANS;
 }
 
+/** The parts of an element a canvas gesture can change. */
+export type ElementTransform = Partial<TransformBox>;
+
 type EditorCanvasProps = {
   document: EditorDocument;
   interactive?: boolean;
-  onMoveEnd?: (id: string, position: { x: number; y: number }) => void;
+  onTransformEnd?: (id: string, transform: ElementTransform) => void;
   onSelect: (id: string | null) => void;
   selectedId: string | null;
   watermark?: boolean;
 };
 
-export function EditorCanvas({ document, interactive = true, onMoveEnd, onSelect, selectedId, watermark = false }: EditorCanvasProps) {
+export function EditorCanvas({ document, interactive = true, onTransformEnd, onSelect, selectedId, watermark = false }: EditorCanvasProps) {
   const ordered = [...document.elements].sort((left, right) => left.zIndex - right.zIndex);
   const [canvasSize, setCanvasSize] = useState({ height: 1, width: 1 });
-  const [dragPositions, setDragPositions] = useState<Record<string, { x: number; y: number }>>({});
+  /*
+   * Where an element is while a gesture is still in progress. Held apart from
+   * the document so a drag does not write a history entry per frame — the
+   * committed value lands once, on release, and one undo takes the whole gesture
+   * back rather than unwinding it a pixel at a time.
+   */
+  const [drafts, setDrafts] = useState<Record<string, ElementTransform>>({});
+
+  function draft(id: string, transform: ElementTransform) {
+    setDrafts((current) => ({ ...current, [id]: { ...current[id], ...transform } }));
+  }
+
+  function commit(id: string, transform: ElementTransform) {
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    onTransformEnd?.(id, transform);
+  }
+
+  const selected = ordered.find((item) => item.id === selectedId && item.visible) ?? null;
 
   return (
     <Pressable
@@ -70,25 +114,37 @@ export function EditorCanvas({ document, interactive = true, onMoveEnd, onSelect
       ) : null}
       {ordered.map((item) => item.visible ? (
         <CanvasElement
+          canvas={canvasSize}
           document={document}
           element={item}
           key={item.id}
           interactive={interactive}
-          onDrag={(position) => setDragPositions((current) => ({ ...current, [item.id]: position }))}
-          onDragEnd={(position) => {
-            setDragPositions((current) => {
-              const next = { ...current };
-              delete next[item.id];
-              return next;
-            });
-            onMoveEnd?.(item.id, position);
-          }}
+          onDrag={(position) => draft(item.id, { position })}
+          onDragEnd={(position) => commit(item.id, { position })}
           onSelect={onSelect}
-          position={dragPositions[item.id] ?? item.position}
+          position={drafts[item.id]?.position ?? item.position}
+          rotation={drafts[item.id]?.rotation ?? item.rotation}
           selected={selectedId === item.id}
-          size={canvasSize}
+          size={drafts[item.id]?.size ?? item.size}
         />
       ) : null)}
+
+      {/* After the elements so the handles are never buried under a later one,
+          and only while editing — during an export `selectedId` is cleared, which
+          keeps the furniture out of the captured image. */}
+      {interactive && selected && !selected.locked ? (
+        <SelectionHandles
+          canvas={canvasSize}
+          committed={{ position: selected.position, rotation: selected.rotation, size: selected.size }}
+          live={{
+            position: drafts[selected.id]?.position ?? selected.position,
+            rotation: drafts[selected.id]?.rotation ?? selected.rotation,
+            size: drafts[selected.id]?.size ?? selected.size,
+          }}
+          onCommit={(transform) => commit(selected.id, transform)}
+          onDraft={(transform) => draft(selected.id, transform)}
+        />
+      ) : null}
       {document.showQrOnDesign ? (
         <View style={styles.qrPlaceholder}>
           <Ionicons color={document.colors.primary} name="qr-code-outline" size={32} />
@@ -100,6 +156,7 @@ export function EditorCanvas({ document, interactive = true, onMoveEnd, onSelect
 }
 
 function CanvasElement({
+  canvas,
   document,
   element,
   interactive,
@@ -107,9 +164,11 @@ function CanvasElement({
   onDragEnd,
   onSelect,
   position,
+  rotation,
   selected,
   size,
 }: {
+  canvas: CanvasSize;
   document: EditorDocument;
   element: EditorElement;
   interactive: boolean;
@@ -117,19 +176,21 @@ function CanvasElement({
   onDragEnd: (position: { x: number; y: number }) => void;
   onSelect: (id: string) => void;
   position: { x: number; y: number };
+  rotation: number;
   selected: boolean;
+  /** The element's own size, in canvas percentages. */
   size: { height: number; width: number };
 }) {
-  const left = `${Math.max(0, position.x - element.size.width / 2)}%` as `${number}%`;
-  const top = `${Math.max(0, position.y - element.size.height / 2)}%` as `${number}%`;
-  const width = `${element.size.width}%` as `${number}%`;
-  const height = `${element.size.height}%` as `${number}%`;
+  const left = `${Math.max(0, position.x - size.width / 2)}%` as `${number}%`;
+  const top = `${Math.max(0, position.y - size.height / 2)}%` as `${number}%`;
+  const width = `${size.width}%` as `${number}%`;
+  const height = `${size.height}%` as `${number}%`;
   const elementStyle = {
     height,
     left,
     opacity: element.opacity,
     top,
-    transform: [{ rotate: `${element.rotation}deg` }],
+    transform: [{ rotate: `${rotation}deg` }],
     width,
     zIndex: element.zIndex,
   };
@@ -139,12 +200,12 @@ function CanvasElement({
     .runOnJS(true)
     .onStart(() => onSelect(element.id))
     .onUpdate((event) => onDrag({
-      x: Math.min(100, Math.max(0, element.position.x + (event.translationX / size.width) * 100)),
-      y: Math.min(100, Math.max(0, element.position.y + (event.translationY / size.height) * 100)),
+      x: Math.min(100, Math.max(0, element.position.x + (event.translationX / canvas.width) * 100)),
+      y: Math.min(100, Math.max(0, element.position.y + (event.translationY / canvas.height) * 100)),
     }))
     .onEnd((event) => onDragEnd({
-      x: Math.min(100, Math.max(0, element.position.x + (event.translationX / size.width) * 100)),
-      y: Math.min(100, Math.max(0, element.position.y + (event.translationY / size.height) * 100)),
+      x: Math.min(100, Math.max(0, element.position.x + (event.translationX / canvas.width) * 100)),
+      y: Math.min(100, Math.max(0, element.position.y + (event.translationY / canvas.height) * 100)),
     }));
 
   return (
@@ -169,17 +230,150 @@ function CanvasElement({
           style={{
             color: element.style.color ?? document.colors.text,
             fontFamily: resolveFontFamily(element.style.fontFamily),
-            fontSize: Math.max(10, (element.style.fontSize ?? 24) * (size.width / DESIGN_WIDTH)),
+            fontSize: Math.max(10, (element.style.fontSize ?? 24) * (canvas.width / DESIGN_WIDTH)),
             fontStyle: element.style.fontStyle === 'italic' ? 'italic' : 'normal',
             fontWeight: element.style.fontWeight === 'bold' ? '700' : '400',
             textAlign: element.style.textAlign ?? 'center',
             textDecorationLine: element.style.textDecoration === 'underline' ? 'underline' : 'none',
           }}>
-          {element.content}
+          {resolveElementText(element, document)}
         </Text>
       )}
-      {selected ? <View style={styles.selectionDot} /> : null}
     </Pressable>
+    </GestureDetector>
+  );
+}
+
+const CORNERS: { corner: Corner; label: string }[] = [
+  { corner: 'topLeft', label: 'sol üst' },
+  { corner: 'topRight', label: 'sağ üst' },
+  { corner: 'bottomLeft', label: 'sol alt' },
+  { corner: 'bottomRight', label: 'sağ alt' },
+];
+
+/*
+ * Resize and rotate handles, drawn over the canvas rather than inside the
+ * element they belong to.
+ *
+ * Nesting them in the element would put their gestures inside its drag gesture,
+ * where the two compete for the same touch and which one wins depends on
+ * ordering rather than on intent. As a sibling layer each handle owns its touch
+ * outright, and the element keeps a drag gesture that is only ever a drag.
+ *
+ * The layer lets touches through everywhere except on a handle, so tapping the
+ * canvas still deselects and elements underneath stay draggable.
+ */
+function SelectionHandles({
+  canvas,
+  committed,
+  live,
+  onCommit,
+  onDraft,
+}: {
+  canvas: CanvasSize;
+  /** The element as stored, which every gesture measures its drag against. */
+  committed: TransformBox;
+  /** The element as currently shown, which is where the handles are drawn. */
+  live: TransformBox;
+  onCommit: (transform: ElementTransform) => void;
+  onDraft: (transform: ElementTransform) => void;
+}) {
+  /*
+   * The canvas clips to its own bounds, so a handle hung above an element that
+   * is already near the top would simply not be drawn. Swapping it underneath
+   * keeps it reachable; the placement is handed to the rotation maths too, which
+   * measures the drag from wherever the handle actually started.
+   *
+   * Decided from the committed box rather than the live one so it cannot change
+   * part-way through a gesture. Reading the live box would let a rotation drag
+   * push the handle across the threshold it is being measured against, moving
+   * the origin mid-drag and snapping the element half a turn.
+   */
+  const placement = handleAnchors(committed, canvas, 'above').rotation.y < HANDLE_SIZE ? 'below' : 'above';
+  const anchors = handleAnchors(live, canvas, placement);
+  const tetherMidpoint = {
+    x: (anchors.tether.x + anchors.rotation.x) / 2,
+    y: (anchors.tether.y + anchors.rotation.y) / 2,
+  };
+
+  return (
+    <View pointerEvents="box-none" style={styles.handleLayer}>
+      {/* Drawn before the handles so it passes under the knob rather than
+          through it, and non-interactive so it never eats a rotation drag. */}
+      <View
+        pointerEvents="none"
+        style={[
+          styles.tether,
+          {
+            left: tetherMidpoint.x - TETHER_WIDTH / 2,
+            top: tetherMidpoint.y - ROTATION_HANDLE_GAP / 2,
+            transform: [{ rotate: `${live.rotation}deg` }],
+          },
+        ]}
+      />
+
+      <TransformHandle
+        accessibilityLabel="Öğeyi döndür"
+        at={anchors.rotation}
+        onCommit={(delta) => onCommit({ rotation: rotateFromHandle({ box: committed, canvas, delta, placement }) })}
+        onDraft={(delta) => onDraft({ rotation: rotateFromHandle({ box: committed, canvas, delta, placement }) })}
+        round>
+        <Ionicons color={colors.white} name="refresh-outline" size={13} />
+      </TransformHandle>
+
+      {CORNERS.map(({ corner, label }) => (
+        <TransformHandle
+          accessibilityLabel={`Öğeyi ${label} köşeden boyutlandır`}
+          at={anchors[corner]}
+          key={corner}
+          onCommit={(delta) => onCommit(resizeFromCorner({ box: committed, canvas, corner, delta }))}
+          onDraft={(delta) => onDraft(resizeFromCorner({ box: committed, canvas, corner, delta }))}
+        />
+      ))}
+    </View>
+  );
+}
+
+/**
+ * One draggable knob. Reports the gesture's cumulative translation rather than
+ * per-frame deltas, so the geometry is always derived from where the finger
+ * started and rounding cannot accumulate over a long drag.
+ */
+function TransformHandle({
+  accessibilityLabel,
+  at,
+  children,
+  onCommit,
+  onDraft,
+  round = false,
+}: {
+  accessibilityLabel: string;
+  at: Point;
+  children?: React.ReactNode;
+  onCommit: (delta: Point) => void;
+  onDraft: (delta: Point) => void;
+  round?: boolean;
+}) {
+  const pan = Gesture.Pan()
+    .runOnJS(true)
+    // The knob is drawn small enough not to hide the artwork it sits on, which
+    // makes it smaller than a fingertip; the slop is what is actually pressed.
+    .hitSlop({ bottom: HANDLE_SLOP, left: HANDLE_SLOP, right: HANDLE_SLOP, top: HANDLE_SLOP })
+    .onUpdate((event) => onDraft({ x: event.translationX, y: event.translationY }))
+    .onEnd((event) => onCommit({ x: event.translationX, y: event.translationY }));
+
+  return (
+    <GestureDetector gesture={pan}>
+      <View
+        accessibilityLabel={accessibilityLabel}
+        accessibilityRole="adjustable"
+        style={[
+          styles.handle,
+          round && styles.handleRound,
+          { left: at.x - HANDLE_SIZE / 2, top: at.y - HANDLE_SIZE / 2 },
+        ]}>
+        {children}
+      </View>
     </GestureDetector>
   );
 }
@@ -202,14 +396,22 @@ export function DecorationShape({
   if (decoration) {
     return (
       <Svg height="100%" preserveAspectRatio="xMidYMid meet" viewBox={decoration.viewBox ?? '0 0 50 50'} width="100%">
-        <Path
-          d={decoration.path}
-          fill={decoration.filled ? color : 'none'}
-          stroke={color}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={decoration.filled ? 0 : decoration.strokeWidth ?? 2}
-        />
+        {decorationLayers(decoration, color).map((layer, index) => (
+          <Path
+            d={layer.path}
+            fill={layer.fill}
+            // Layers are positional: nothing about a wreath's ninth leaf makes a
+            // more stable key than where it sits in the list, and the list for a
+            // given ornament never reorders.
+            key={index}
+            opacity={layer.opacity}
+            stroke={layer.stroke}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={layer.strokeWidth}
+            transform={layer.transform}
+          />
+        ))}
       </Svg>
     );
   }
@@ -221,7 +423,23 @@ const styles = StyleSheet.create({
   canvas: { ...shadow, aspectRatio: CANVAS_ASPECT, borderRadius: radius.md, overflow: 'hidden', position: 'relative', width: '100%' },
   element: { alignItems: 'center', justifyContent: 'center', padding: 2, position: 'absolute' },
   selected: { borderColor: colors.secondary, borderRadius: 4, borderStyle: 'dashed', borderWidth: 1.5 },
-  selectionDot: { backgroundColor: colors.secondary, borderColor: colors.white, borderRadius: 6, borderWidth: 1, height: 10, position: 'absolute', right: -5, top: -5, width: 10 },
+
+  // Above every element: an element with a high `zIndex` would otherwise cover
+  // the handles of the one below it, which is precisely when they are needed.
+  handleLayer: { bottom: 0, left: 0, position: 'absolute', right: 0, top: 0, zIndex: 9999 },
+  handle: {
+    alignItems: 'center',
+    backgroundColor: colors.secondary,
+    borderColor: colors.white,
+    borderRadius: 3,
+    borderWidth: 1.5,
+    height: HANDLE_SIZE,
+    justifyContent: 'center',
+    position: 'absolute',
+    width: HANDLE_SIZE,
+  },
+  handleRound: { borderRadius: HANDLE_SIZE / 2 },
+  tether: { backgroundColor: colors.secondary, height: ROTATION_HANDLE_GAP, position: 'absolute', width: TETHER_WIDTH },
   divider: { borderRadius: radius.pill, height: 3, width: '100%' },
   qrPlaceholder: { alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.82)', borderRadius: radius.sm, bottom: spacing.md, height: 48, justifyContent: 'center', position: 'absolute', right: spacing.md, width: 48 },
   watermark: { bottom: spacing.sm, color: colors.inkMuted, fontFamily: typography.bodyMedium, fontSize: 8, left: spacing.md, opacity: 0.7, position: 'absolute' },

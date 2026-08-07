@@ -1,8 +1,10 @@
-import { File } from 'expo-file-system';
 
 import { assertBackendWritesEnabled } from '@/config/feature-flags';
 import { decodeMediaContext } from '@/domain/decoders';
 import type { MediaContext, MediaKind } from '@/domain/models';
+// Expo resolves the .native/.web implementation at bundle time; ESLint's resolver does not.
+// eslint-disable-next-line import/no-unresolved
+import { readFileBytes } from '@/lib/local-file';
 import { RemoteDataError } from '@/lib/remote-data';
 import { requireSupabaseClient } from '@/lib/supabase';
 
@@ -88,7 +90,7 @@ async function uploadWithTicket(file: LocalMediaFile, request: Record<string, un
   const ticket = decodeUploadTicket(data);
   if (!ticket) throw new RemoteDataError('Yükleme izni yanıtı geçersiz.');
 
-  const bytes = await new File(file.uri).bytes();
+  const bytes = await readFileBytes(file.uri);
   const { error: uploadError } = await supabase.storage
     .from(ticket.bucket)
     .uploadToSignedUrl(ticket.path, ticket.token, bytes, {

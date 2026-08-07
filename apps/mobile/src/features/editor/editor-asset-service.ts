@@ -1,8 +1,10 @@
-import { File } from 'expo-file-system';
 
 import { assertBackendWritesEnabled } from '@/config/feature-flags';
 import type { LocalMediaFile } from '@/features/media/media-service';
 import { validateLocalMedia } from '@/features/media/media-service';
+// Expo resolves the .native/.web implementation at bundle time; ESLint's resolver does not.
+// eslint-disable-next-line import/no-unresolved
+import { readFileBytes } from '@/lib/local-file';
 import { RemoteDataError } from '@/lib/remote-data';
 import { requireSupabaseClient } from '@/lib/supabase';
 
@@ -27,7 +29,7 @@ export async function uploadInvitationImage(file: LocalMediaFile, invitationId?:
   if (!ticket || typeof ticket.bucket !== 'string' || typeof ticket.path !== 'string' || typeof ticket.token !== 'string' || typeof ticket.ticketId !== 'string') {
     throw new RemoteDataError('Görsel yükleme izni geçersiz.');
   }
-  const bytes = await new File(file.uri).bytes();
+  const bytes = await readFileBytes(file.uri);
   const { error: uploadError } = await supabase.storage.from(ticket.bucket).uploadToSignedUrl(ticket.path, ticket.token, bytes, { contentType: file.mimeType });
   if (uploadError) throw new RemoteDataError('Görsel yüklenemedi.', uploadError);
   const { data: completed, error: completeError } = await supabase.functions.invoke('complete-invitation-image-upload', { body: { ticketId: ticket.ticketId } });

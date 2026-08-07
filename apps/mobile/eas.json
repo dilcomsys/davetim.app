@@ -11,12 +11,28 @@
     "preview": {
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_ENABLE_BACKEND_WRITES": "false",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://lwowqdxysoqrwoylhouy.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_u5oDKCEGpBghAUkd6ACK9A_d85z5PXy",
+        "EXPO_PUBLIC_PUBLIC_APP_URL": "https://davetim.app",
+        "EXPO_PUBLIC_USE_RN_FETCH": "1",
+        "EXPO_PUBLIC_ENABLE_BACKEND_WRITES": "true",
         "EXPO_PUBLIC_ENABLE_REWARDED_ADS": "false"
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://lwowqdxysoqrwoylhouy.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_u5oDKCEGpBghAUkd6ACK9A_d85z5PXy",
+        "EXPO_PUBLIC_PUBLIC_APP_URL": "https://davetim.app",
+        "EXPO_PUBLIC_USE_RN_FETCH": "1",
+        "EXPO_PUBLIC_ENABLE_REWARDED_ADS": "true",
+        "EXPO_PUBLIC_ADMOB_REWARDED_IOS_UNIT_ID": "ca-app-pub-6150267472645410/9348126539",
+        "EXPO_PUBLIC_ADMOB_REWARDED_ANDROID_UNIT_ID": "ca-app-pub-3940256099942544/5224354917",
+        "ADMOB_IOS_APP_ID": "ca-app-pub-6150267472645410~9663967097",
+        "ADMOB_ANDROID_APP_ID": "ca-app-pub-3940256099942544~3347511713",
+        "EXPO_PUBLIC_ENABLE_BACKEND_WRITES": "true"
+      }
     }
   },
   "submit": {

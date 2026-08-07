@@ -149,6 +149,65 @@ way in. That keeps the work proportional to use, touches only rows the caller
 already owns, and adds no new privileged surface. Revisit once the ad funnel has
 numbers.
 
+## TestFlight preparation — 2026-08-05
+
+Verified by generating the native project locally (`expo prebuild`) rather than
+by starting an EAS build and reading the failure.
+
+### Fixed
+
+- **The app icon was the stock Expo mark**, which the release plan already
+  listed as a blocker. Replaced with a 1024×1024 icon drawn from the brand's own
+  `SealMark` — the double-ringed D monogram with its gold dots, İznik palette.
+  Opaque RGB, no alpha: App Store Connect rejects an icon with an alpha channel.
+  The splash was the stock mark too, and now uses the same seal.
+- **A production build would have shipped with no Supabase configuration.**
+  `.env` is gitignored and the `production` profile had no `env` block, so
+  `EXPO_PUBLIC_SUPABASE_URL` and the publishable key would have been undefined —
+  the app would have opened straight into its "unconfigured" state with no way
+  to sign in. Added to `eas.json`. Every value there already ships inside the
+  binary, so none of it is a new disclosure; nothing matching `sb_secret_` or
+  `service_role` is present, and that was checked rather than assumed.
+- **`ITSAppUsesNonExemptEncryption` was missing**, so App Store Connect would
+  ask the export-compliance question on every upload and hold the build. The app
+  uses only HTTPS, which is exempt.
+- **The privacy manifest lost its required-reason API declarations.** Declaring
+  `ios.privacyManifests` *replaces* what the prebuild generates instead of
+  merging, so the four entries Expo emits (UserDefaults, SystemBootTime,
+  DiskSpace, FileTimestamp) disappeared when the collected-data types were
+  added. App Store Connect rejects that upload with ITMS-91053. Restated in
+  `app.json` and re-verified: 4 accessed APIs, 8 collected types.
+- **EAS project linked**: `@dilcomsysdev/davetim`,
+  `48db340a-f76e-40a8-8b0f-27acebe69fcd`. This also unblocks push tokens, which
+  need `extra.eas.projectId`.
+
+### iOS linkage: neither mode works on its own
+
+Found by running `pod install` locally rather than by watching an EAS build
+fail. Both linkage settings are refused outright:
+
+| `useFrameworks` | Why it fails |
+|---|---|
+| `static` | `react-native-firebase` resolves firebase-ios-sdk through SPM, whose Swift Package ships only dynamic products. Each Firebase pod embeds its own copy → duplicate symbols. |
+| `dynamic` | Google's `UserMessagingPlatform`, pulled in by the ads SDK for the consent flow, ships a **static** xcframework, and CocoaPods will not place a static binary inside a dynamic-framework target. |
+
+Resolved with `plugins/with-rnfirebase-no-spm.js`, which writes
+`$RNFirebaseDisableSPM = true` into the Podfile before any target block so
+Firebase resolves through CocoaPods, and keeps `useFrameworks: static` for the
+ads SDK. The `static` setting was originally added on the usual advice for
+react-native-firebase; that advice predates the SPM migration.
+
+**Do not pipe `pod install` through `tail`.** The exit code then comes from
+`tail`, and a failed install reads as success — that happened here, and the
+giveaway was a missing `Podfile.lock` rather than the status code.
+
+### Confirmed in the generated project
+
+`GADApplicationIdentifier` is the real iOS AdMob app ID, `SKAdNetworkItems` has
+50 entries, the photo-library purpose string is present, there is no
+`NSUserTrackingUsageDescription` (correct for non-personalised ads), and
+`aps-environment` is in the entitlements for push.
+
 ## Still open, not blocking
 
 - Leaked-password protection stays off by decision (Pro plan). Minimum length 8

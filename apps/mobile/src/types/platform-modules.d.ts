@@ -17,3 +17,9 @@ declare module '@/features/auth/apple-auth' {
   import type { AppleAuthGateway } from '@/features/auth/apple-auth-types';
   export const appleAuth: AppleAuthGateway;
 }
+
+declare module '@/lib/local-file' {
+  import type { ReadFileBytes, ReadFileSize } from '@/lib/local-file-types';
+  export const readFileBytes: ReadFileBytes;
+  export const readFileSize: ReadFileSize;
+}

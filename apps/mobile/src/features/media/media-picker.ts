@@ -1,7 +1,9 @@
-import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 
 import type { LocalMediaFile } from '@/features/media/media-service';
+// Expo resolves the .native/.web implementation at bundle time; ESLint's resolver does not.
+// eslint-disable-next-line import/no-unresolved
+import { readFileSize } from '@/lib/local-file';
 import { RemoteDataError } from '@/lib/remote-data';
 
 function inferMimeType(fileName: string) {
@@ -33,10 +35,11 @@ async function pickFile(mediaTypes: ('images' | 'videos')[]): Promise<LocalMedia
   const asset = result.assets[0];
   const fallbackName = `davetim-${Date.now()}.${asset.type === 'video' ? 'mp4' : 'jpg'}`;
   const fileName = asset.fileName || fallbackName;
-  const file = new File(asset.uri);
   return {
     fileName,
-    fileSize: asset.fileSize ?? file.size,
+    // The picker reports a size on both platforms; measuring the file is only
+    // the fallback, and a size of zero is caught by validation downstream.
+    fileSize: asset.fileSize ?? await readFileSize(asset.uri) ?? 0,
     mimeType: asset.mimeType || inferMimeType(fileName),
     uri: asset.uri,
   };

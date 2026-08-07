@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import type { InvitationTemplate } from '@/domain/models';
 import {
   alignElements,
+  createBoundTextElement,
   createDecorationElement,
   createEditorDocument,
   createTextElement,
   distributeElements,
+  resolveElementText,
   serializeEditorDocument,
 } from '@/features/editor/editor-model';
 
@@ -152,5 +154,73 @@ describe('editor model', () => {
       );
       expect(bunched.map((item) => item.position.y)).toEqual([10, 50, 90]);
     });
+  });
+});
+
+describe('bound text boxes', () => {
+  const base = createEditorDocument(null, null);
+
+  it('shows the event detail once it has one', () => {
+    const element = createBoundTextElement('locationName', 1);
+    const document = { ...base, locationName: 'Deniz Kızı Balo Salonu' };
+
+    expect(resolveElementText(element, document)).toBe('Deniz Kızı Balo Salonu');
+  });
+
+  it('falls back to its own text while the detail is empty', () => {
+    // A template opened before anything is filled in still has to read the way
+    // the designer drew it, sample date and all.
+    const element = { ...createBoundTextElement('locationName', 1), content: 'Saklı Gül Bahçesi' };
+
+    expect(resolveElementText(element, { ...base, locationName: '   ' })).toBe('Saklı Gül Bahçesi');
+  });
+
+  it('prints a date the way a person writes one', () => {
+    const element = createBoundTextElement('eventDate', 1);
+    const shown = resolveElementText(element, { ...base, eventDate: '2026-09-12' });
+
+    expect(shown).not.toBe('2026-09-12');
+    expect(shown).toContain('2026');
+  });
+
+  it('leaves an unbound box alone', () => {
+    const element = createTextElement(1);
+
+    expect(resolveElementText({ ...element, content: 'Serbest metin' }, { ...base, title: 'X' })).toBe('Serbest metin');
+  });
+
+  it('survives a save and reload', () => {
+    const element = createBoundTextElement('eventTime', 1);
+    const document = { ...base, elements: [element], eventTime: '19:30' };
+    const serialized = serializeEditorDocument(document);
+    const reopened = createEditorDocument(
+      { content: serialized.content, eventTime: '19:30', title: serialized.title } as never,
+      null,
+    );
+
+    expect(reopened.elements[0].bind).toBe('eventTime');
+    expect(resolveElementText(reopened.elements[0], reopened)).toBe('19:30');
+  });
+
+  it('wires a template field to the detail it was always meant to hold', () => {
+    const template = {
+      decorativeElements: [],
+      defaultImageUrl: null,
+      name: 'Test',
+      textFields: [
+        { defaultValue: 'Selin & Burak', id: 'names', label: 'İsimler', style: { fontSize: 40 } },
+        { defaultValue: '15 Ağustos 2024', id: 'date', label: 'Tarih', style: { fontSize: 16 } },
+        { defaultValue: 'DÜĞÜN TÖRENİ', id: 'header', label: 'Başlık', style: { fontSize: 20 } },
+      ],
+    } as never;
+
+    const document = createEditorDocument(null, template);
+    const byId = Object.fromEntries(document.elements.map((item) => [item.id, item]));
+
+    expect(byId.names.bind).toBe('title');
+    expect(byId.date.bind).toBe('eventDate');
+    // Set dressing, not event data: binding it would replace the template's own
+    // wording with a second copy of the couple's names.
+    expect(byId.header.bind).toBeUndefined();
   });
 });

@@ -1,8 +1,8 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { Tap } from '@/components/motion';
-import { colors, engraved, radius, spacing, typography } from '@/theme/tokens';
+import { Enter, Tap } from '@/components/motion';
+import { colors, engraved, radius, shadow, spacing, typography } from '@/theme/tokens';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -11,6 +11,102 @@ type IconName = React.ComponentProps<typeof Ionicons>['name'];
  * they share one rule: nothing is smaller than 44pt, because the whole point of
  * the rewrite is that a phone is the primary device rather than the fallback.
  */
+
+/*
+ * A tray holds one job at a time, in the space above the toolbar, and never
+ * covers the invitation.
+ *
+ * It replaces what used to be a half-screen modal sheet carrying every control
+ * an element has. That sheet forced a choice between seeing the design and
+ * reaching the controls: the canvas had to shrink to roughly a third to make
+ * room, which is small enough that judging a change by looking at it stops
+ * working — and judging a change by looking at it is the entire task.
+ *
+ * So a tray is short, and it is not modal. No scrim, no dismiss-on-tap-outside,
+ * and it sits in the layout rather than over it, which means the canvas simply
+ * takes the height that is left and stays legible. The canvas also stays live:
+ * an element can be dragged while its own size tray is open.
+ */
+export function Tray({
+  children,
+  onClose,
+  tall = false,
+  title,
+}: React.PropsWithChildren<{
+  onClose: () => void;
+  /** For pickers that need a second row. Still a fraction of a modal sheet. */
+  tall?: boolean;
+  title: string;
+}>) {
+  return (
+    <Enter style={styles.tray}>
+      <View style={styles.trayHeader}>
+        <Text accessibilityRole="header" style={styles.trayTitle}>{title}</Text>
+        <Pressable accessibilityLabel="Aracı kapat" accessibilityRole="button" hitSlop={12} onPress={onClose}>
+          <Ionicons color={colors.inkMuted} name="chevron-down" size={20} />
+        </Pressable>
+      </View>
+      <ScrollView
+        contentContainerStyle={styles.trayContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        style={tall ? styles.trayScrollTall : styles.trayScroll}>
+        {children}
+      </ScrollView>
+    </Enter>
+  );
+}
+
+/**
+ * The horizontally scrolling strip of tools under the tray. Scrolling rather
+ * than wrapping keeps the chrome one row tall however many tools a selection
+ * offers, which is what stops the canvas losing height as the toolset grows.
+ */
+export function ToolStrip({ children }: React.PropsWithChildren) {
+  return (
+    <ScrollView
+      contentContainerStyle={styles.toolStripContent}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.toolStrip}>
+      {children}
+    </ScrollView>
+  );
+}
+
+export function ToolButton({
+  active = false,
+  danger = false,
+  disabled = false,
+  icon,
+  label,
+  onPress,
+}: {
+  active?: boolean;
+  danger?: boolean;
+  disabled?: boolean;
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+}) {
+  const tint = danger ? colors.primaryText : active ? colors.white : colors.onWorkspaceMuted;
+
+  return (
+    <Tap
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      accessibilityState={{ disabled, selected: active }}
+      disabled={disabled}
+      onPress={onPress}
+      scaleTo={0.92}
+      style={[styles.toolButton, active && styles.toolButtonActive, disabled && styles.toolButtonDisabled]}>
+      <Ionicons color={tint} name={icon} size={21} />
+      <Text numberOfLines={1} style={[styles.toolLabel, active && styles.toolLabelActive, danger && styles.toolLabelDanger]}>
+        {label}
+      </Text>
+    </Tap>
+  );
+}
 
 export function FieldLabel({ children }: React.PropsWithChildren) {
   return <Text style={styles.label}>{children}</Text>;
@@ -289,6 +385,51 @@ export function PanelNote({ children, tone = 'info' }: React.PropsWithChildren<{
 }
 
 const styles = StyleSheet.create({
+  /*
+   * Porcelain, like the sheets, so every control already written for a sheet
+   * works inside a tray unchanged. Floated clear of the toolbar rather than
+   * joined to it: the tray comes and goes while the toolbar stays, and a seam
+   * makes that relationship legible.
+   */
+  tray: {
+    ...shadow,
+    backgroundColor: colors.canvas,
+    borderRadius: radius.lg,
+    marginBottom: spacing.sm,
+    marginHorizontal: spacing.md,
+  },
+  trayHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  trayTitle: { ...engraved, color: colors.inkMuted },
+  // Capped rather than sized: a tray with one stepper row should be one stepper
+  // row tall, not padded out to a uniform height that costs the canvas nothing
+  // but does not earn it either.
+  trayScroll: { maxHeight: 168 },
+  trayScrollTall: { maxHeight: 252 },
+  trayContent: { gap: spacing.md, padding: spacing.lg },
+
+  toolStrip: { flexGrow: 0, marginBottom: spacing.sm },
+  toolStripContent: { gap: spacing.xs, paddingHorizontal: spacing.md },
+  toolButton: {
+    alignItems: 'center',
+    borderRadius: radius.md,
+    gap: 5,
+    justifyContent: 'center',
+    minWidth: 66,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  toolButtonActive: { backgroundColor: colors.secondary },
+  toolButtonDisabled: { opacity: 0.35 },
+  toolLabel: { color: colors.onWorkspaceMuted, fontFamily: typography.bodyMedium, fontSize: 11, fontWeight: '700' },
+  toolLabelActive: { color: colors.white },
+  toolLabelDanger: { color: colors.primaryText },
+
   label: { ...engraved, color: colors.inkMuted },
   field: { gap: spacing.sm },
   fieldRow: { flexDirection: 'row', gap: spacing.md },

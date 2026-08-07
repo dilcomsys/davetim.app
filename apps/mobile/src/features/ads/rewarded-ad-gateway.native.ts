@@ -22,10 +22,53 @@ type AdsModule = typeof import('react-native-google-mobile-ads');
 let adsModule: Promise<AdsModule> | null = null;
 let initialization: Promise<unknown> | null = null;
 
+/*
+ * Dynamic `import()` of this package does not always hand back the shape the
+ * types promise. It ships CommonJS, and depending on how the bundler applies
+ * its interop the namespace can arrive wrapped one level deeper, so `mod.default`
+ * is the module object rather than the `MobileAds` function. Calling it then
+ * fails with "undefined is not a function" from inside a tap handler, with
+ * nothing in the message to say which symbol was missing.
+ *
+ * Unwrapping first and then checking the handful of symbols this file actually
+ * uses turns that into a named failure. The check is cheap and runs once,
+ * because the module promise is memoised.
+ */
+const REQUIRED_SYMBOLS = ['AdsConsent', 'RewardedAd', 'RewardedAdEventType', 'AdEventType'] as const;
+
+function unwrap(module: unknown): AdsModule {
+  const candidate = module as { default?: unknown };
+  // A correctly interopped namespace has `default` as the MobileAds function.
+  // A double-wrapped one has `default` as another namespace object.
+  if (candidate?.default && typeof candidate.default === 'object' && 'AdsConsent' in (candidate.default as object)) {
+    return candidate.default as AdsModule;
+  }
+  return module as AdsModule;
+}
+
+function assertUsable(ads: AdsModule) {
+  const missing = REQUIRED_SYMBOLS.filter((name) => !(ads as unknown as Record<string, unknown>)[name]);
+  if (typeof (ads as unknown as { default?: unknown }).default !== 'function') missing.push('MobileAds' as never);
+  if (missing.length > 0) {
+    throw new RemoteDataError(
+      `Reklam bileşeni bu sürümde eksik (${missing.join(', ')}). Uygulamayı mağaza sürümünde deneyin.`,
+    );
+  }
+}
+
 function loadAdsModule(): Promise<AdsModule> {
-  adsModule ??= import('react-native-google-mobile-ads').catch(() => {
-    throw new RemoteDataError('Ödüllü reklamlar yalnızca mağaza sürümünde çalışır.');
-  });
+  adsModule ??= import('react-native-google-mobile-ads')
+    .then((module) => {
+      const ads = unwrap(module);
+      assertUsable(ads);
+      return ads;
+    })
+    .catch((error) => {
+      // A failed check already carries a useful message; anything else means the
+      // native module is absent, which is the Expo Go case.
+      if (error instanceof RemoteDataError) throw error;
+      throw new RemoteDataError('Ödüllü reklamlar yalnızca mağaza sürümünde çalışır.');
+    });
   return adsModule;
 }
 
@@ -35,12 +78,36 @@ function productionUnitId() {
     : process.env.EXPO_PUBLIC_ADMOB_REWARDED_ANDROID_UNIT_ID;
 }
 
-function adUnitId(ads: AdsModule) {
-  if (__DEV__) return ads.TestIds.REWARDED;
+/*
+ * Always the real ad unit, in development too.
+ *
+ * TestIds.REWARDED belongs to Google's demo account, not ours, so our
+ * server-side verification URL is not attached to it and AdMob never posts a
+ * callback. The reward then never leaves `pending`: the ad plays, the poll in
+ * waitForServerReceipt runs its full twenty seconds and the feature fails with
+ * a timeout that looks like a backend fault but is not one.
+ *
+ * A real unit keeps the SSV chain intact. Serving *live* ads to a development
+ * device would be invalid traffic, so development registers the device as a
+ * test device instead — same unit, same callback, test creatives.
+ */
+function adUnitId() {
   const value = productionUnitId();
-  if (!value) throw new RemoteDataError('Ödüllü reklam birimi yayın için yapılandırılmamış.');
+  if (!value) throw new RemoteDataError('Ödüllü reklam birimi yapılandırılmamış.');
   return value;
 }
+
+function testDeviceIds() {
+  return (process.env.EXPO_PUBLIC_ADMOB_TEST_DEVICE_IDS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+type MobileAdsClient = {
+  initialize: () => Promise<unknown>;
+  setRequestConfiguration: (config: { testDeviceIdentifiers: string[] }) => Promise<unknown>;
+};
 
 async function initializeAds(ads: AdsModule) {
   try {
@@ -50,13 +117,29 @@ async function initializeAds(ads: AdsModule) {
   }
   const consent = await ads.AdsConsent.getConsentInfo();
   if (!consent.canRequestAds) throw new RemoteDataError('Reklam tercihi tamamlanmadan reklam gösterilemez.');
-  initialization ??= ads.default().initialize();
+  const mobileAds = (ads as unknown as { default: () => MobileAdsClient }).default;
+  initialization ??= (async () => {
+    if (__DEV__) {
+      const identifiers = testDeviceIds();
+      if (identifiers.length === 0) {
+        // The SDK logs the device's own identifier on the first ad request;
+        // copy it into EXPO_PUBLIC_ADMOB_TEST_DEVICE_IDS.
+        console.warn(
+          '[ads] EXPO_PUBLIC_ADMOB_TEST_DEVICE_IDS boş. Geliştirme cihazına gerçek reklam '
+          + 'servis edilir; AdMob bunu geçersiz trafik sayabilir.',
+        );
+      } else {
+        await mobileAds().setRequestConfiguration({ testDeviceIdentifiers: identifiers });
+      }
+    }
+    await mobileAds().initialize();
+  })();
   await initialization;
 }
 
 function showRewardedAd(ads: AdsModule, userId: string, customData: string) {
   return new Promise<void>((resolve, reject) => {
-    const ad = ads.RewardedAd.createForAdRequest(adUnitId(ads), {
+    const ad = ads.RewardedAd.createForAdRequest(adUnitId(), {
       requestNonPersonalizedAdsOnly: true,
       serverSideVerificationOptions: { customData, userId },
     });
@@ -116,7 +199,7 @@ async function waitForServerReceipt(intentId: string) {
 
 export const rewardedAdGateway: RewardedAdGateway = {
   async isReady() {
-    return featureFlags.rewardedAds && Boolean(__DEV__ || productionUnitId());
+    return featureFlags.rewardedAds && Boolean(productionUnitId());
   },
   async requestReward(feature: RewardedFeatureKey, context) {
     if (!featureFlags.rewardedAds) throw new RemoteDataError('Ödüllü reklamlar şu anda kapalı.');

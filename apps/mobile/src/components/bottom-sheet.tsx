@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import type { PropsWithChildren } from 'react';
+import { useEffect, useRef } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -29,13 +30,25 @@ import { colors, engraved, radius, spacing, typography } from '@/theme/tokens';
 /*
  * The editor's panels live here rather than in a full-screen route because the
  * point of the redesign is that you never lose sight of the invitation while you
- * edit it. `heightRatio` caps how much of the screen a panel may claim; keep it
- * under 0.65 or the canvas disappears and the sheet may as well have been a page.
+ * edit it.
+ *
+ * `heightRatio` caps how much of the screen a panel may claim. The canvas scales
+ * into whatever is left rather than being covered, so this is a legibility
+ * budget rather than a visibility one: every extra tenth here is a tenth off the
+ * invitation the user is trying to watch while they edit it. Panels scroll, the
+ * canvas cannot — prefer letting a long panel scroll over raising this.
  */
 type BottomSheetProps = PropsWithChildren<{
   /** Fraction of screen height the sheet may occupy. Canvas keeps the rest. */
   heightRatio?: number;
   onClose: () => void;
+  /**
+   * Reports the sheet's top edge in window coordinates so whatever is behind it
+   * can move out of the way instead of being covered. `null` means no sheet is
+   * claiming any space — the caller would otherwise keep reserving room for a
+   * panel that has closed.
+   */
+  onSheetTop?: (topInWindow: number | null) => void;
   /** Right-hand slot in the header, for a panel-specific action. */
   action?: React.ReactNode;
   subtitle?: string;
@@ -46,10 +59,39 @@ type BottomSheetProps = PropsWithChildren<{
 const DISMISS_DISTANCE = 110;
 const DISMISS_VELOCITY = 700;
 
-export function BottomSheet({ action, children, heightRatio = 0.58, onClose, subtitle, title }: BottomSheetProps) {
+export function BottomSheet({ action, children, heightRatio = 0.52, onClose, onSheetTop, subtitle, title }: BottomSheetProps) {
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const translateY = useSharedValue(0);
+
+  // Through a ref so the unmount effect stays a mount-only effect. Depending on
+  // the prop instead would fire the "sheet is gone" report on every render that
+  // passed a fresh callback, which is every render for an inline arrow.
+  const report = useRef(onSheetTop);
+  useEffect(() => { report.current = onSheetTop; }, [onSheetTop]);
+  useEffect(() => () => report.current?.(null), []);
+
+  /*
+   * The top edge is derived from the overlay's window rect plus the sheet's own
+   * layout height, rather than measuring the sheet directly. Both inputs are
+   * animation-free: the overlay never moves, and layout height is settled before
+   * the entrance transform runs. Measuring the sheet itself would sample it
+   * mid-slide and report a top edge a screen-height too low.
+   *
+   * Deriving it from `useWindowDimensions` and the bottom inset would be simpler
+   * and wrong — whether an absolutely positioned overlay stops at the safe area
+   * or runs to the hardware edge is exactly the kind of thing that differs per
+   * device, and a wrong answer here shifts the canvas by the inset.
+   */
+  const overlayRef = useRef<View>(null);
+  const overlayBottom = useRef(0);
+  const sheetHeight = useRef(0);
+
+  function publish() {
+    if (overlayBottom.current > 0 && sheetHeight.current > 0) {
+      report.current?.(overlayBottom.current - sheetHeight.current);
+    }
+  }
 
   const pan = Gesture.Pan()
     .onUpdate((event) => {
@@ -68,7 +110,14 @@ export function BottomSheet({ action, children, heightRatio = 0.58, onClose, sub
   const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.get() }] }));
 
   return (
-    <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+    <View
+      onLayout={() => overlayRef.current?.measureInWindow((_x, y, _width, measuredHeight) => {
+        overlayBottom.current = y + measuredHeight;
+        publish();
+      })}
+      pointerEvents="box-none"
+      ref={overlayRef}
+      style={StyleSheet.absoluteFill}>
       <Animated.View entering={FadeIn.duration(140)} exiting={FadeOut.duration(120)} style={StyleSheet.absoluteFill}>
         <Pressable accessibilityLabel="Paneli kapat" onPress={onClose} style={styles.backdrop} />
       </Animated.View>
@@ -83,6 +132,7 @@ export function BottomSheet({ action, children, heightRatio = 0.58, onClose, sub
       <Animated.View
         entering={SlideInDown.duration(200)}
         exiting={SlideOutDown.duration(160)}
+        onLayout={(event) => { sheetHeight.current = event.nativeEvent.layout.height; publish(); }}
         style={[styles.sheet, { maxHeight: height * heightRatio }, sheetStyle]}>
         <GestureDetector gesture={pan}>
           <View style={styles.handleArea}>

@@ -8,6 +8,7 @@ import { ActivityIndicator, Alert, Pressable, Share, StyleSheet, Text, View } fr
 
 import { PrimaryButton } from '@/components/primary-button';
 import { Screen } from '@/components/screen';
+import { SettingsGroup, SettingsPanel, SettingsRow } from '@/components/settings-list';
 import { trackEvent } from '@/features/analytics/analytics';
 import { ANALYTICS_EVENTS } from '@/features/analytics/events';
 import { featureFlags } from '@/config/feature-flags';
@@ -138,32 +139,83 @@ export default function InvitationDetailScreen() {
         ))}
       </View>
 
-      <View style={styles.manageCard}>
-        <Text style={styles.manageTitle}>Davet işlemleri</Text>
-        {!featureFlags.backendWrites ? <Text style={styles.draftText}>Arşivleme, çoğaltma ve silme sunucu kontrolleri tamamlanana kadar kapalı.</Text> : null}
-        <View style={styles.shareActions}>
-          <PrimaryButton accessibilityLabel="Daveti çoğalt" disabled={!featureFlags.backendWrites || actionBusy} icon="copy-outline" onPress={() => void lifecycle('duplicate')} variant="secondary">Çoğalt</PrimaryButton>
-          <PrimaryButton accessibilityLabel={invitation.status === 'archived' ? 'Daveti arşivden çıkar' : 'Daveti arşivle'} disabled={!featureFlags.backendWrites || actionBusy} icon="archive-outline" onPress={() => void lifecycle(invitation.status === 'archived' ? 'restore' : 'archive')} variant="secondary">{invitation.status === 'archived' ? 'Arşivden çıkar' : 'Arşivle'}</PrimaryButton>
-          <PrimaryButton accessibilityLabel="Daveti kalıcı olarak sil" disabled={!featureFlags.backendWrites || actionBusy} icon="trash-outline" onPress={confirmDelete} variant="secondary">Sil</PrimaryButton>
-        </View>
-      </View>
-
+      {/*
+        Two ways to send an invitation, and they answer different questions.
+        Presented side by side because choosing between them is the decision a
+        host actually faces, and until now the screen offered only the anonymous
+        one while the tracked one was buried behind the Davetliler tile.
+      */}
       {invitation.status === 'published' ? (
-        <View style={styles.shareCard}>
-          <Text style={styles.shareTitle}>Paylaşmaya hazır</Text>
-          <Text numberOfLines={1} style={styles.shareUrl}>{getPublicInvitationUrl(invitation.id)}</Text>
-          {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
-          <View style={styles.shareActions}>
-            <PrimaryButton accessibilityLabel="Davet bağlantısını paylaş" icon="share-outline" onPress={() => void shareInvitation()}>Paylaş</PrimaryButton>
-            <PrimaryButton accessibilityLabel="Davet bağlantısını kopyala" icon="copy-outline" onPress={() => void copyInvitationLink()} variant="secondary">Kopyala</PrimaryButton>
-          </View>
-        </View>
+        <SettingsGroup label="PAYLAŞ">
+          <SettingsRow
+            detail="Herkese aynı bağlantı. Kimin açtığı ve kimin geleceği bilinmez."
+            icon="link-outline"
+            label="Herkese açık bağlantı"
+            onPress={() => void shareInvitation()}
+            trailingIcon="share-outline"
+          />
+          <SettingsRow
+            detail="Kopyala, sosyal medyada veya grup sohbetinde paylaş."
+            icon="copy-outline"
+            label="Bağlantıyı kopyala"
+            onPress={() => void copyInvitationLink()}
+            trailingIcon="copy-outline"
+          />
+          <SettingsRow
+            detail={`Herkese kendi bağlantısı gider, katılım yanıtı isme bağlanır.${
+              invitation.rsvpCount > 0 ? ` Şu ana kadar ${invitation.rsvpCount} yanıt.` : ''
+            }`}
+            icon="people-outline"
+            label="Davetli listesiyle gönder"
+            onPress={() => router.push(`/guests/${invitation.id}` as Href)}
+          />
+          <SettingsPanel>
+            <Text numberOfLines={1} style={styles.shareUrl}>{getPublicInvitationUrl(invitation.id)}</Text>
+            {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
+          </SettingsPanel>
+        </SettingsGroup>
       ) : (
         <View style={styles.draftNotice}>
           <Ionicons color={colors.warning} name="information-circle-outline" size={22} />
           <Text style={styles.draftText}>Davet yalnızca yayınlandıktan sonra anonim bağlantıyla paylaşılabilir.</Text>
         </View>
       )}
+
+      {/*
+        Rows rather than three identical secondary buttons. Delete was the same
+        shape and weight as Duplicate, one tap from each other, and permanent.
+      */}
+      <SettingsGroup label="DAVET İŞLEMLERİ">
+        <SettingsRow
+          detail="Tasarımın ve bilgilerin kopyasıyla yeni bir taslak açar."
+          disabled={!featureFlags.backendWrites || actionBusy}
+          icon="copy-outline"
+          label="Çoğalt"
+          onPress={() => void lifecycle('duplicate')}
+        />
+        <SettingsRow
+          detail={invitation.status === 'archived' ? 'Listeye geri getirir.' : 'Listeden kaldırır, silmez.'}
+          disabled={!featureFlags.backendWrites || actionBusy}
+          icon={invitation.status === 'archived' ? 'arrow-undo-outline' : 'archive-outline'}
+          label={invitation.status === 'archived' ? 'Arşivden çıkar' : 'Arşivle'}
+          onPress={() => void lifecycle(invitation.status === 'archived' ? 'restore' : 'archive')}
+        />
+        <SettingsRow
+          danger
+          detail="Davetliler ve yanıtlar dahil kalıcı olarak silinir."
+          disabled={!featureFlags.backendWrites || actionBusy}
+          icon="trash-outline"
+          label="Sil"
+          onPress={confirmDelete}
+        />
+        {!featureFlags.backendWrites ? (
+          <SettingsPanel>
+            <Text style={styles.draftText}>
+              Arşivleme, çoğaltma ve silme sunucu kontrolleri tamamlanana kadar kapalı.
+            </Text>
+          </SettingsPanel>
+        ) : null}
+      </SettingsGroup>
     </Screen>
   );
 }
@@ -186,13 +238,8 @@ const styles = StyleSheet.create({
   action: { alignItems: 'center', backgroundColor: colors.secondarySoft, borderRadius: radius.md, gap: spacing.sm, padding: spacing.lg, width: '47.8%' },
   pressed: { opacity: 0.78 },
   actionLabel: { color: colors.secondary, fontFamily: typography.bodyMedium, fontSize: 13, fontWeight: '800' },
-  shareCard: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: radius.md, borderWidth: 1, gap: spacing.md, padding: spacing.lg },
-  shareTitle: { color: colors.ink, fontFamily: typography.display, fontSize: 22, fontWeight: '700' },
   shareUrl: { color: colors.inkMuted, fontFamily: typography.body, fontSize: 12 },
-  shareActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   notice: { color: colors.success, fontFamily: typography.bodyMedium, fontSize: 12 },
   draftNotice: { alignItems: 'center', backgroundColor: colors.warningSoft, borderRadius: radius.md, flexDirection: 'row', gap: spacing.sm, padding: spacing.md },
   draftText: { color: colors.warning, flex: 1, fontFamily: typography.body, fontSize: 13, lineHeight: 19 },
-  manageCard: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: radius.md, borderWidth: 1, gap: spacing.md, padding: spacing.lg },
-  manageTitle: { color: colors.plum, fontFamily: typography.display, fontSize: 21, fontWeight: '700' },
 });
